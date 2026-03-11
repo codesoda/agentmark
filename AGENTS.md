@@ -8,7 +8,8 @@
 ## Rust CLI
 
 - Workspace root `Cargo.toml` with single member `packages/cli`
-- Lib/bin split: `src/lib.rs` exposes `cli`, `commands`, `config` modules; `src/main.rs` is a thin wrapper
+- Lib/bin split: `src/lib.rs` exposes `cli`, `commands`, `config`, `models` modules; `src/main.rs` is a thin wrapper
+- Domain model types live in `src/models/` (`bookmark.rs`, `event.rs`) — pure data + serde, no I/O or config coupling
 - Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
 - Commands are in `src/commands/` module tree (e.g., `src/commands/init.rs`)
 - Command handlers return `Result<()>` — `main.rs` converts errors to stderr + non-zero exit
