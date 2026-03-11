@@ -1,20 +1,49 @@
+pub mod init;
+
 use crate::cli::{
     Commands, ListArgs, OpenArgs, ReprocessArgs, SaveArgs, SearchArgs, ShowArgs, TagArgs,
 };
 
 /// Execute the parsed CLI command.
-pub fn dispatch(command: Commands) {
+pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        Commands::Init => placeholder("init"),
-        Commands::Save(args) => dispatch_save(args),
-        Commands::List(args) => dispatch_list(args),
-        Commands::Show(args) => dispatch_show(args),
-        Commands::Search(args) => dispatch_search(args),
-        Commands::Tag(args) => dispatch_tag(args),
-        Commands::Collections => placeholder("collections"),
-        Commands::Open(args) => dispatch_open(args),
-        Commands::Reprocess(args) => dispatch_reprocess(args),
-        Commands::NativeHost => placeholder("native-host"),
+        Commands::Init => init::run_init(),
+        Commands::Save(args) => {
+            dispatch_save(args);
+            Ok(())
+        }
+        Commands::List(args) => {
+            dispatch_list(args);
+            Ok(())
+        }
+        Commands::Show(args) => {
+            dispatch_show(args);
+            Ok(())
+        }
+        Commands::Search(args) => {
+            dispatch_search(args);
+            Ok(())
+        }
+        Commands::Tag(args) => {
+            dispatch_tag(args);
+            Ok(())
+        }
+        Commands::Collections => {
+            placeholder("collections");
+            Ok(())
+        }
+        Commands::Open(args) => {
+            dispatch_open(args);
+            Ok(())
+        }
+        Commands::Reprocess(args) => {
+            dispatch_reprocess(args);
+            Ok(())
+        }
+        Commands::NativeHost => {
+            placeholder("native-host");
+            Ok(())
+        }
     }
 }
 

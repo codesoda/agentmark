@@ -1,12 +1,5 @@
+use agentmark::cli::{self, Cli};
 use clap::{CommandFactory, Parser};
-
-// Pull in the CLI types from the agentmark crate.
-// Since this is a binary crate, we test via the public modules.
-// We use `#[path]` to include the source directly for unit-level testing.
-#[path = "../src/cli.rs"]
-mod cli;
-
-use cli::Cli;
 
 // ── Clap graph integrity ────────────────────────────────────────────
 

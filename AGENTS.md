@@ -8,7 +8,12 @@
 ## Rust CLI
 
 - Workspace root `Cargo.toml` with single member `packages/cli`
+- Lib/bin split: `src/lib.rs` exposes `cli`, `commands`, `config` modules; `src/main.rs` is a thin wrapper
+- Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
+- Commands are in `src/commands/` module tree (e.g., `src/commands/init.rs`)
+- Command handlers return `Result<()>` — `main.rs` converts errors to stderr + non-zero exit
 - Run checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test`
+- Tests use `tempfile` for temp HOME dirs and `assert_cmd` for binary integration tests
 
 ## Chrome Extension
 
