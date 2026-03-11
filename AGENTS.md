@@ -8,9 +8,10 @@
 ## Rust CLI
 
 - Workspace root `Cargo.toml` with single member `packages/cli`
-- Lib/bin split: `src/lib.rs` exposes `cli`, `commands`, `config`, `db`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
+- Lib/bin split: `src/lib.rs` exposes `cli`, `commands`, `config`, `db`, `extract`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
 - Domain model types live in `src/models/` (`bookmark.rs`, `event.rs`) — pure data + serde, no I/O or config coupling
 - Database layer lives in `src/db/` (`mod.rs`, `schema.rs`, `repository.rs`) — SQLite + FTS5 index, depends on `models` only
+- Extract layer lives in `src/extract/` (`mod.rs`, `readability.rs`, `to_markdown.rs`) — article extraction + markdown conversion + content hashing, depends only on readability/scraper/sha2
 - Fetch layer lives in `src/fetch/` (`mod.rs`, `metadata.rs`) — HTTP fetch + metadata extraction, depends only on reqwest/scraper/url
 - Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
 - DB layer accepts explicit paths/connections; `config.rs` remains the only HOME-aware module
