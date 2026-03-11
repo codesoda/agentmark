@@ -20,3 +20,4 @@
 {"session_uid":"f26073668a0fa74bde76133f001bc530dd946c8d518081be1b06b8a937975fd1","session_blob_sha":"3795fd8f2d4d558faea077a29e8aae8c136782d0","session_start":1773254587,"agent":"claude-code","ingested_at":"2026-03-11T18:43:07Z"}
 {"session_uid":"5fb7ecc168fa185d49511d98c6cbfd4d7283c664ebc1886bc1fa7b3774cd180c","session_blob_sha":"58c58984c2fb5597036cd5d2766170bdb93799cd","session_start":1773249364,"agent":"claude-code","ingested_at":"2026-03-11T17:16:04Z"}
 {"session_uid":"47c0b814e2dc8800cf8b3814fb6d7a6e18f93d797f9e38c3c1df5ee70ca99c24","session_blob_sha":"04874663ac26beccd4766eee6c766e6caf1612e9","session_start":1773256065,"agent":"claude-code","ingested_at":"2026-03-11T19:07:45Z"}
+{"session_uid":"f938248f8a7b9ff2fc0037c27afc573e8d70f77815cda71bc62ce0ff3024bf82","session_blob_sha":"991cec3b18eb165647c089fb0f9a66714ff85d73","session_start":1773256033,"agent":"codex","ingested_at":"2026-03-11T19:07:13Z"}
