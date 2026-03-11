@@ -61,6 +61,10 @@ pub struct SaveArgs {
     /// Action intent for the bookmark
     #[arg(long)]
     pub action: Option<String>,
+
+    /// Skip enrichment even if enabled in config
+    #[arg(long)]
+    pub no_enrich: bool,
 }
 
 #[derive(clap::Args)]

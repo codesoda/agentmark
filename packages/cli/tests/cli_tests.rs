@@ -93,6 +93,38 @@ fn save_help_contains_expected_flags() {
     );
 }
 
+#[test]
+fn save_parses_no_enrich() {
+    let cli =
+        Cli::try_parse_from(["agentmark", "save", "https://example.com", "--no-enrich"]).unwrap();
+    match cli.command {
+        cli::Commands::Save(args) => {
+            assert!(args.no_enrich);
+        }
+        _ => panic!("expected Save"),
+    }
+}
+
+#[test]
+fn save_no_enrich_defaults_to_false() {
+    let cli = Cli::try_parse_from(["agentmark", "save", "https://example.com"]).unwrap();
+    match cli.command {
+        cli::Commands::Save(args) => {
+            assert!(!args.no_enrich);
+        }
+        _ => panic!("expected Save"),
+    }
+}
+
+#[test]
+fn save_help_contains_no_enrich() {
+    let help = get_subcommand_help("save");
+    assert!(
+        help.contains("--no-enrich"),
+        "save help missing --no-enrich flag"
+    );
+}
+
 // ── List command ────────────────────────────────────────────────────
 
 #[test]
