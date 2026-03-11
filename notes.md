@@ -1,3 +1,28 @@
+help me ideate on a new tool idea. It's called agentmark. It's in the vain of agenting coding cli tools being the backbone of many oersonal organization/productivity agent setups lately.
+
+The general idea is that folks have a local folder structure setup and it comprised of markdown, json, jsonl, toml, yaml files and the users have a number of skills/cli tools, alongside desktop tools (obsidian is popular) which can be used to manipulate the underlying files.
+
+Some references
+- https://www.chatprd.ai/how-i-ai/teresa-torres-claude-code-obsdian-task-management
+- https://www.producttalk.org/give-claude-code-a-memory/
+- https://www.lennysnewsletter.com/p/this-week-on-how-i-ai-claude-code (and the multiple referenced/linked articles that expand on this topic)
+
+So the general idea is there is a number of folders with relevant things in them. Coincidentally I was a pocket user. Pocket is/was a bookmarking tool, I could click the pocket icon in the chrome extension and that saved the url into my pocket account. It also showed a small chrome extension window which allowed me to add extra tags to the saved url.
+
+Internally in pocket, it fetched the page, used something like readbility to extract the main article content, very nice. It also (because it had such a large customer base and had the data to correlate) recommended other articles I hadn't viewed or saved.
+
+I want to re-create that experience, but with an agent first angle, and I want to call it AgentMark. Agent + Bookmark, agent first bookmarking for claude code and codex.
+
+- chrome extension: let's me save a url, add optional tags, and ideally even a very short/simple "action", a short message that can be used to instruct an agent on how to save it, or what to do with it (I have other skills, I can hint at their usage with/against this url at capture time).
+
+- agemtmark cli app & agent skill: a simple rust cli, which gets called from the installed chrome extension (chrome extensions can invoke a cli as an action from the extension), this would pass the data through to be saved. If it can be bi-directional then it would also read a list of used tags (added by the user and also suggested ones based on past saved articles). This would have a config which says where the "bookmarks folder is" and then in that folder a markdown file would be created with some front matter, with url, and ideally some other details pulled from og tags, title, description, image(?), publish date( if possible) (we should also add the "bookmarked/saved date"). I would also like to save an agent generated summary, full readbility style article content as well. The user provided tags should be saved to the front matter, and the ai agent should be able to suggest any others as well.
+
+If an "action" is provided then the cli can launch an agent `claude "details go here"` or `codex "details go here"`. config would have configuration about which agent to use for the summary/tagging etc and also to launch actions in.
+
+What other capabilities am I not thinking of? Let brainstorm a PRD for this ai first tool.
+
+---
+
 Yes — this has a real wedge.
 
 What your references all point toward is a broader shift: people are replacing SaaS task/research tools with local markdown- and filesystem-based setups because they want portability, persistent context, and direct agent access. In the examples you linked, that shows up as VS Code/Obsidian workflows, project-specific markdown context, slash commands, and reusable skills instead of traditional dashboards.  ￼
