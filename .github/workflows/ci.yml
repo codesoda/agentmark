@@ -59,6 +59,11 @@ jobs:
         run: npm ci
         working-directory: packages/extension
 
+      - name: Typecheck
+        if: steps.check.outputs.exists == 'true'
+        run: npm run typecheck
+        working-directory: packages/extension
+
       - name: Build
         if: steps.check.outputs.exists == 'true'
         run: npm run build
@@ -66,10 +71,5 @@ jobs:
 
       - name: Lint
         if: steps.check.outputs.exists == 'true'
-        run: |
-          if node -e "const p = require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1)" 2>/dev/null; then
-            npm run lint
-          else
-            echo "No lint script configured — skipping"
-          fi
+        run: npm run lint
         working-directory: packages/extension

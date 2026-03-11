@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "AgentMark",
+  "version": "0.1.0",
+  "description": "Agent-first bookmarking for local AI workflows",
+  "action": {
+    "default_popup": "src/popup/index.html"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "sidePanel",
+    "nativeMessaging"
+  ]
+}
