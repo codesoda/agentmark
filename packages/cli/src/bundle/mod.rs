@@ -9,6 +9,53 @@ use crate::models::{Bookmark, BookmarkEvent};
 pub use bookmark_md::BodySections;
 pub use writer::BundleInput;
 
+/// Extract body section content from an existing `bookmark.md` file.
+///
+/// Looks for `# Summary`, `# Suggested Next Actions`, `# Related Items`
+/// headings and captures the text between them, excluding placeholder text.
+fn parse_body_sections(content: &str) -> BodySections {
+    let mut sections = BodySections::default();
+
+    // Find the end of front matter
+    let body = if let Some(after_open) = content.strip_prefix("---\n") {
+        if let Some(end) = after_open.find("\n---\n") {
+            &after_open[end + 5..]
+        } else {
+            content
+        }
+    } else {
+        content
+    };
+
+    sections.summary = extract_section(body, "# Summary");
+    sections.suggested_next_actions = extract_section(body, "# Suggested Next Actions");
+    sections.related_items = extract_section(body, "# Related Items");
+
+    sections
+}
+
+/// Extract content between a section heading and the next `# ` heading.
+/// Returns None if the section contains only placeholder text or is empty.
+fn extract_section(body: &str, heading: &str) -> Option<String> {
+    let start = body.find(heading)?;
+    let after_heading = &body[start + heading.len()..];
+
+    // Find the next top-level heading or end of content
+    let end = after_heading.find("\n# ").unwrap_or(after_heading.len());
+
+    let section_text = after_heading[..end].trim();
+
+    // Return None for placeholder text
+    if section_text.is_empty()
+        || section_text == "[pending enrichment]"
+        || section_text == "[pending]"
+    {
+        return None;
+    }
+
+    Some(section_text.to_string())
+}
+
 /// Errors that can occur during bundle operations.
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
@@ -101,6 +148,55 @@ impl Bundle {
     /// Append a lifecycle event to `events.jsonl`.
     pub fn append_event(&self, event: &BookmarkEvent) -> Result<(), BundleError> {
         writer::append_event(&self.path, event)
+    }
+
+    /// Rewrite `article.md` with new content.
+    pub fn update_article_md(&self, content: &str) -> Result<(), BundleError> {
+        writer::rewrite_article_md(&self.path, content)
+    }
+
+    /// Rewrite `metadata.json` with new metadata.
+    pub fn update_metadata_json(&self, metadata: &PageMetadata) -> Result<(), BundleError> {
+        writer::rewrite_metadata_json(&self.path, metadata)
+    }
+
+    /// Rewrite `source.html` with new HTML.
+    pub fn update_source_html(&self, html: &str) -> Result<(), BundleError> {
+        writer::rewrite_source_html(&self.path, html)
+    }
+
+    /// Find an existing bundle by storage root, saved_at date, and bookmark ID.
+    ///
+    /// This lookup is stable even if the bookmark title changes, because it
+    /// matches by the `-<id>` suffix of the directory name.
+    pub fn find(
+        storage_root: &Path,
+        saved_at: &chrono::DateTime<chrono::Utc>,
+        id: &str,
+    ) -> Result<Self, BundleError> {
+        let path = writer::find_bundle_dir(storage_root, saved_at, id)?;
+        Ok(Self { path })
+    }
+
+    /// Rewrite `bookmark.md` preserving existing body sections.
+    ///
+    /// Reads the current bookmark.md, extracts body section content,
+    /// then re-renders with updated front matter + preserved body.
+    pub fn update_bookmark_md_preserving_body(
+        &self,
+        bookmark: &Bookmark,
+    ) -> Result<(), BundleError> {
+        let bm_path = self.path.join("bookmark.md");
+        let sections = if bm_path.is_file() {
+            let content = std::fs::read_to_string(&bm_path).map_err(|source| BundleError::Io {
+                path: bm_path.clone(),
+                source,
+            })?;
+            parse_body_sections(&content)
+        } else {
+            BodySections::default()
+        };
+        writer::rewrite_bookmark_md(&self.path, bookmark, &sections)
     }
 }
 
@@ -477,6 +573,152 @@ mod tests {
         let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", html, "cli").unwrap();
         let content = std::fs::read_to_string(bundle.path().join("source.html")).unwrap();
         assert_eq!(content, html);
+    }
+
+    // --- Bundle find tests ---
+
+    #[test]
+    fn find_bundle_by_saved_at_and_id() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let meta = test_metadata();
+
+        let created = Bundle::create(tmp.path(), &bm, &meta, "", "", "cli").unwrap();
+        let found = Bundle::find(tmp.path(), &bm.saved_at, &bm.id).unwrap();
+        assert_eq!(created.path(), found.path());
+    }
+
+    #[test]
+    fn find_bundle_missing_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let saved_at = Utc.with_ymd_and_hms(2026, 3, 5, 14, 30, 0).unwrap();
+        let result = Bundle::find(tmp.path(), &saved_at, "am_nonexistent");
+        assert!(matches!(
+            result.unwrap_err(),
+            BundleError::BundleNotFound { .. }
+        ));
+    }
+
+    // --- In-place update tests ---
+
+    #[test]
+    fn update_article_md_rewrites_content() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle =
+            Bundle::create(tmp.path(), &bm, &test_metadata(), "original", "", "cli").unwrap();
+
+        bundle.update_article_md("updated content").unwrap();
+        let content = std::fs::read_to_string(bundle.path().join("article.md")).unwrap();
+        assert_eq!(content, "updated content");
+    }
+
+    #[test]
+    fn update_metadata_json_rewrites_content() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+
+        let new_meta = PageMetadata {
+            title: Some("Updated Title".to_string()),
+            ..Default::default()
+        };
+        bundle.update_metadata_json(&new_meta).unwrap();
+        let content = std::fs::read_to_string(bundle.path().join("metadata.json")).unwrap();
+        let roundtripped: PageMetadata = serde_json::from_str(&content).unwrap();
+        assert_eq!(roundtripped, new_meta);
+    }
+
+    #[test]
+    fn update_source_html_rewrites_content() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "<old>", "cli").unwrap();
+
+        bundle.update_source_html("<new>").unwrap();
+        let content = std::fs::read_to_string(bundle.path().join("source.html")).unwrap();
+        assert_eq!(content, "<new>");
+    }
+
+    // --- Body preservation tests ---
+
+    #[test]
+    fn update_bookmark_md_preserving_body_keeps_enriched_content() {
+        let tmp = TempDir::new().unwrap();
+        let mut bm = test_bookmark();
+        let meta = test_metadata();
+
+        let bundle = Bundle::create(tmp.path(), &bm, &meta, "", "", "cli").unwrap();
+
+        // Simulate enrichment by writing custom body sections
+        let enriched_sections = BodySections {
+            summary: Some("This is an enriched summary with real content.".to_string()),
+            suggested_next_actions: Some("- Read follow-up article".to_string()),
+            related_items: Some("- [Related page](https://example.com/related)".to_string()),
+        };
+        bundle.update_bookmark_md(&bm, &enriched_sections).unwrap();
+
+        // Now update front matter only (simulating resave)
+        bm.user_tags = vec!["new-tag".to_string()];
+        bundle.update_bookmark_md_preserving_body(&bm).unwrap();
+
+        // Verify body sections are preserved
+        let content = std::fs::read_to_string(bundle.path().join("bookmark.md")).unwrap();
+        assert!(
+            content.contains("new-tag"),
+            "front matter should be updated"
+        );
+        assert!(
+            content.contains("enriched summary"),
+            "summary should be preserved"
+        );
+        assert!(
+            content.contains("Read follow-up"),
+            "actions should be preserved"
+        );
+        assert!(
+            content.contains("Related page"),
+            "related items should be preserved"
+        );
+    }
+
+    #[test]
+    fn update_bookmark_md_preserving_body_handles_placeholder_sections() {
+        let tmp = TempDir::new().unwrap();
+        let mut bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+
+        // Bookmark starts with placeholder sections
+        bm.user_tags = vec!["tag".to_string()];
+        bundle.update_bookmark_md_preserving_body(&bm).unwrap();
+
+        let content = std::fs::read_to_string(bundle.path().join("bookmark.md")).unwrap();
+        assert!(content.contains("tag"), "front matter should be updated");
+        // Placeholders should still be there (since they're the default)
+        assert!(content.contains("[pending enrichment]"));
+    }
+
+    // --- Parse body sections tests ---
+
+    #[test]
+    fn parse_body_sections_extracts_enriched_content() {
+        let content = "---\nid: am_test\n---\n\n# Summary\n\nEnriched summary here.\n\n# Why I Saved This\n\nMy note.\n\n# Suggested Next Actions\n\n- Do something\n\n# Related Items\n\n- [Link](url)\n";
+        let sections = parse_body_sections(content);
+        assert_eq!(sections.summary.as_deref(), Some("Enriched summary here."));
+        assert_eq!(
+            sections.suggested_next_actions.as_deref(),
+            Some("- Do something")
+        );
+        assert_eq!(sections.related_items.as_deref(), Some("- [Link](url)"));
+    }
+
+    #[test]
+    fn parse_body_sections_returns_none_for_placeholders() {
+        let content = "---\nid: am_test\n---\n\n# Summary\n\n[pending enrichment]\n\n# Why I Saved This\n\n\n\n# Suggested Next Actions\n\n[pending enrichment]\n\n# Related Items\n\n[pending]\n";
+        let sections = parse_body_sections(content);
+        assert!(sections.summary.is_none());
+        assert!(sections.suggested_next_actions.is_none());
+        assert!(sections.related_items.is_none());
     }
 
     #[test]

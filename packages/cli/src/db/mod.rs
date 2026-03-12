@@ -36,6 +36,9 @@ pub enum DbError {
 
     #[error("row decode error: {field}: {detail}")]
     Decode { field: String, detail: String },
+
+    #[error("bookmark not found: {id}")]
+    NotFound { id: String },
 }
 
 /// Open (or create) a SQLite database at `path` and ensure the schema is current.

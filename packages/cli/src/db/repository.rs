@@ -292,8 +292,14 @@ impl<'a> BookmarkRepository<'a> {
     }
 
     /// Get a bookmark by its canonical URL.
+    ///
+    /// If multiple rows share the same canonical URL (legacy duplicates),
+    /// returns the earliest saved one (ORDER BY saved_at ASC LIMIT 1).
     pub fn get_by_canonical_url(&self, url: &str) -> Result<Option<Bookmark>, DbError> {
-        let sql = format!("SELECT {SELECT_COLS} FROM bookmarks WHERE canonical_url = ?1");
+        let sql = format!(
+            "SELECT {SELECT_COLS} FROM bookmarks WHERE canonical_url = ?1 \
+             ORDER BY saved_at ASC LIMIT 1"
+        );
         let result = self
             .conn
             .query_row(&sql, params![url], |row| {
@@ -571,6 +577,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(found.id, bm.id);
+    }
+
+    #[test]
+    fn get_by_canonical_url_returns_earliest_when_duplicates_exist() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+
+        let mut bm1 = sample_bookmark("https://example.com/page", "First");
+        bm1.canonical_url = "https://example.com/page".to_string();
+        bm1.saved_at = Utc::now() - chrono::Duration::seconds(10);
+        repo.insert(&bm1).unwrap();
+
+        let mut bm2 = sample_bookmark("https://example.com/page?utm=x", "Second");
+        bm2.canonical_url = "https://example.com/page".to_string();
+        bm2.saved_at = Utc::now();
+        repo.insert(&bm2).unwrap();
+
+        let found = repo
+            .get_by_canonical_url("https://example.com/page")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, bm1.id, "should return the earliest saved one");
     }
 
     #[test]

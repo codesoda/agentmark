@@ -1,4 +1,5 @@
 pub mod bundle;
+pub mod canonical;
 pub mod cli;
 pub mod commands;
 pub mod config;

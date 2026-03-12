@@ -192,6 +192,78 @@ pub fn append_event(bundle_dir: &Path, event: &BookmarkEvent) -> Result<(), Bund
     Ok(())
 }
 
+/// Rewrite `article.md` in an existing bundle directory.
+pub fn rewrite_article_md(bundle_dir: &Path, content: &str) -> Result<(), BundleError> {
+    if !bundle_dir.is_dir() {
+        return Err(BundleError::BundleNotFound {
+            path: bundle_dir.to_path_buf(),
+        });
+    }
+    write_file(&bundle_dir.join(ARTICLE_MD), content.as_bytes())
+}
+
+/// Rewrite `metadata.json` in an existing bundle directory.
+pub fn rewrite_metadata_json(
+    bundle_dir: &Path,
+    metadata: &crate::fetch::PageMetadata,
+) -> Result<(), BundleError> {
+    if !bundle_dir.is_dir() {
+        return Err(BundleError::BundleNotFound {
+            path: bundle_dir.to_path_buf(),
+        });
+    }
+    let json = serde_json::to_string_pretty(metadata).map_err(|source| BundleError::Json {
+        path: bundle_dir.join(METADATA_JSON),
+        source,
+    })?;
+    write_file(&bundle_dir.join(METADATA_JSON), json.as_bytes())
+}
+
+/// Rewrite `source.html` in an existing bundle directory.
+pub fn rewrite_source_html(bundle_dir: &Path, html: &str) -> Result<(), BundleError> {
+    if !bundle_dir.is_dir() {
+        return Err(BundleError::BundleNotFound {
+            path: bundle_dir.to_path_buf(),
+        });
+    }
+    write_file(&bundle_dir.join(SOURCE_HTML), html.as_bytes())
+}
+
+/// Find an existing bundle directory by `saved_at` date and bookmark `id`.
+///
+/// Scans the date directory (`<storage>/<YYYY>/<MM>/<DD>/`) for a subdirectory
+/// ending with `-<id>`. This is stable regardless of title changes.
+pub fn find_bundle_dir(
+    storage_root: &Path,
+    saved_at: &DateTime<Utc>,
+    id: &str,
+) -> Result<PathBuf, BundleError> {
+    let date_dir = storage_root
+        .join(format!("{:04}", saved_at.year()))
+        .join(format!("{:02}", saved_at.month()))
+        .join(format!("{:02}", saved_at.day()));
+
+    if !date_dir.is_dir() {
+        return Err(BundleError::BundleNotFound { path: date_dir });
+    }
+
+    let suffix = format!("-{id}");
+    let entries = fs::read_dir(&date_dir).map_err(|source| BundleError::Io {
+        path: date_dir.clone(),
+        source,
+    })?;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.ends_with(&suffix) && entry.path().is_dir() {
+            return Ok(entry.path());
+        }
+    }
+
+    Err(BundleError::BundleNotFound { path: date_dir })
+}
+
 /// Write bytes to a file, creating it if it doesn't exist.
 fn write_file(path: &Path, contents: &[u8]) -> Result<(), BundleError> {
     fs::write(path, contents).map_err(|source| BundleError::Io {
