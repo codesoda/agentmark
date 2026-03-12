@@ -11,8 +11,8 @@ use crate::commands::save::{self, DedupResult, SaveRequest};
 use crate::config;
 use crate::db::BookmarkRepository;
 use crate::enrich::ProviderFactory;
-use crate::models::CaptureSource;
-use crate::native::messages::{IncomingMessage, OutgoingMessage};
+use crate::models::{BookmarkState, CaptureSource};
+use crate::native::messages::{BookmarkSummary, IncomingMessage, OutgoingMessage};
 use crate::native::protocol::{self, ProtocolError};
 
 // ── Public entry point ──────────────────────────────────────────────
@@ -112,6 +112,7 @@ fn dispatch(
             handle_save(req, home, provider_factory)
         }
         IncomingMessage::ListCollections => handle_list_collections(home),
+        IncomingMessage::List { limit, state } => handle_list(home, limit, state),
     }
 }
 
@@ -167,11 +168,19 @@ fn handle_save(
     }
 }
 
-fn handle_list_collections(home: &Path) -> OutgoingMessage {
+/// Verify config exists and open the index DB. Returns an error message on failure.
+fn open_repository(home: &Path) -> Result<rusqlite::Connection, String> {
+    // Verify init by loading config — this surfaces "run `agentmark init` first"
+    config::Config::load(home).map_err(|e| format!("not initialized: {e}"))?;
+
     let db_path = config::index_db_path(home);
-    let conn = match rusqlite::Connection::open(&db_path) {
+    rusqlite::Connection::open(&db_path).map_err(|e| format!("failed to open database: {e}"))
+}
+
+fn handle_list_collections(home: &Path) -> OutgoingMessage {
+    let conn = match open_repository(home) {
         Ok(c) => c,
-        Err(e) => return OutgoingMessage::error(format!("failed to open database: {e}")),
+        Err(e) => return OutgoingMessage::error(e),
     };
     let repo = BookmarkRepository::new(&conn);
     match repo.list_collections() {
@@ -180,6 +189,44 @@ fn handle_list_collections(home: &Path) -> OutgoingMessage {
             OutgoingMessage::ListCollectionsResult { collections: names }
         }
         Err(e) => OutgoingMessage::error(format!("failed to list collections: {e}")),
+    }
+}
+
+/// Maximum number of bookmarks returned in a single list response.
+const MAX_LIST_LIMIT: u32 = 100;
+/// Default number of bookmarks when no limit is specified.
+const DEFAULT_LIST_LIMIT: u32 = 50;
+
+fn handle_list(home: &Path, limit: Option<u32>, state: Option<BookmarkState>) -> OutgoingMessage {
+    let conn = match open_repository(home) {
+        Ok(c) => c,
+        Err(e) => return OutgoingMessage::error(e),
+    };
+    let repo = BookmarkRepository::new(&conn);
+
+    let clamped_limit = limit
+        .map(|l| l.min(MAX_LIST_LIMIT))
+        .unwrap_or(DEFAULT_LIST_LIMIT) as usize;
+
+    match repo.list(clamped_limit, 0, None, None, state.as_ref()) {
+        Ok(bookmarks) => {
+            let summaries: Vec<BookmarkSummary> = bookmarks
+                .into_iter()
+                .map(|b| BookmarkSummary {
+                    id: b.id,
+                    url: b.url,
+                    title: b.title,
+                    state: b.state,
+                    user_tags: b.user_tags,
+                    suggested_tags: b.suggested_tags,
+                    saved_at: b.saved_at.to_rfc3339(),
+                })
+                .collect();
+            OutgoingMessage::ListResult {
+                bookmarks: summaries,
+            }
+        }
+        Err(e) => OutgoingMessage::error(format!("failed to list bookmarks: {e}")),
     }
 }
 
@@ -491,6 +538,46 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dispatch_list_with_no_config_returns_error() {
+        let home = std::path::PathBuf::from("/nonexistent");
+        let factory: &ProviderFactory = &|_, _| {
+            Err(crate::agent::AgentError::InvalidAgent {
+                value: "test".to_string(),
+            })
+        };
+        let response = dispatch(
+            IncomingMessage::List {
+                limit: None,
+                state: None,
+            },
+            &home,
+            &factory,
+        );
+        match response {
+            OutgoingMessage::Error { message } => {
+                assert!(
+                    message.contains("not initialized"),
+                    "expected init error, got: {message}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_request_returns_error_and_loop_continues() {
+        let stdin = frame_messages(&[json!({"type": "list"}), json!({"type": "status"})]);
+        let (stdout, result) = run_host_status_only(&stdin);
+        assert!(result.is_ok());
+
+        let responses = decode_responses(&stdout);
+        assert_eq!(responses.len(), 2);
+        // list fails because /nonexistent has no config
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[1]["type"], "status_result");
     }
 
     #[test]

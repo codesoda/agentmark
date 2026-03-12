@@ -105,6 +105,133 @@ describe("parseNativeResponse", () => {
       parseNativeResponse({ type: "list_collections_result", collections: "not-array" }),
     ).toThrow("missing 'collections' array");
   });
+
+  // -- list_result --
+
+  it("parses list_result with bookmarks correctly", () => {
+    const raw = {
+      type: "list_result",
+      bookmarks: [
+        {
+          id: "am_123",
+          url: "https://example.com",
+          title: "Example",
+          state: "inbox",
+          user_tags: ["rust"],
+          suggested_tags: ["dev"],
+          saved_at: "2026-03-12T00:00:00Z",
+        },
+      ],
+    };
+    const result = parseNativeResponse(raw);
+    expect(result).toEqual({
+      type: "list_result",
+      bookmarks: [
+        {
+          id: "am_123",
+          url: "https://example.com",
+          title: "Example",
+          state: "inbox",
+          user_tags: ["rust"],
+          suggested_tags: ["dev"],
+          saved_at: "2026-03-12T00:00:00Z",
+        },
+      ],
+    });
+  });
+
+  it("parses list_result with empty bookmarks array", () => {
+    const raw = { type: "list_result", bookmarks: [] };
+    const result = parseNativeResponse(raw);
+    expect(result).toEqual({ type: "list_result", bookmarks: [] });
+  });
+
+  it("rejects list_result with missing bookmarks", () => {
+    expect(() => parseNativeResponse({ type: "list_result" })).toThrow(
+      "missing 'bookmarks' array",
+    );
+  });
+
+  it("rejects list_result with non-array bookmarks", () => {
+    expect(() =>
+      parseNativeResponse({ type: "list_result", bookmarks: "not-array" }),
+    ).toThrow("missing 'bookmarks' array");
+  });
+
+  it("rejects list_result with malformed bookmark object", () => {
+    expect(() =>
+      parseNativeResponse({
+        type: "list_result",
+        bookmarks: [{ id: "am_123" }],
+      }),
+    ).toThrow("bookmark[0] has invalid or missing fields");
+  });
+
+  it("rejects list_result with invalid state value", () => {
+    expect(() =>
+      parseNativeResponse({
+        type: "list_result",
+        bookmarks: [
+          {
+            id: "am_123",
+            url: "https://example.com",
+            title: "Example",
+            state: "deleted",
+            user_tags: [],
+            suggested_tags: [],
+            saved_at: "2026-03-12T00:00:00Z",
+          },
+        ],
+      }),
+    ).toThrow("bookmark[0] has invalid or missing fields");
+  });
+
+  it("rejects list_result with non-object bookmark entry", () => {
+    expect(() =>
+      parseNativeResponse({
+        type: "list_result",
+        bookmarks: ["not-an-object"],
+      }),
+    ).toThrow("bookmark[0] is not an object");
+  });
+
+  it("rejects list_result with non-string user_tags entries", () => {
+    expect(() =>
+      parseNativeResponse({
+        type: "list_result",
+        bookmarks: [
+          {
+            id: "am_123",
+            url: "https://example.com",
+            title: "Example",
+            state: "inbox",
+            user_tags: ["valid", 42, null],
+            suggested_tags: [],
+            saved_at: "2026-03-12T00:00:00Z",
+          },
+        ],
+      }),
+    ).toThrow("bookmark[0] has non-string user_tags");
+  });
+
+  it("rejects list_result with non-string suggested_tags entries", () => {
+    expect(() =>
+      parseNativeResponse({
+        type: "list_result",
+        bookmarks: [
+          {
+            id: "am_123",
+            url: "https://example.com",
+            title: "Example",
+            state: "inbox",
+            user_tags: [],
+            suggested_tags: [true, "valid"],
+            saved_at: "2026-03-12T00:00:00Z",
+          },
+        ],
+      }),
+    ).toThrow("bookmark[0] has non-string suggested_tags");
+  });
 });
 
 describe("isErrorResponse", () => {

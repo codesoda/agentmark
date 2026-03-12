@@ -27,7 +27,15 @@ export interface ListCollectionsRequest {
   type: "list_collections";
 }
 
-export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest;
+export type BookmarkStateFilter = "inbox" | "processed" | "archived";
+
+export interface ListRequest {
+  type: "list";
+  limit?: number;
+  state?: BookmarkStateFilter;
+}
+
+export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest;
 
 // --- Incoming responses (Native Host → Extension) ---
 
@@ -49,12 +57,27 @@ export interface ListCollectionsResultResponse {
   collections: string[];
 }
 
+export interface BookmarkSummary {
+  id: string;
+  url: string;
+  title: string;
+  state: BookmarkStateFilter;
+  user_tags: string[];
+  suggested_tags: string[];
+  saved_at: string;
+}
+
+export interface ListResultResponse {
+  type: "list_result";
+  bookmarks: BookmarkSummary[];
+}
+
 export interface ErrorResponse {
   type: "error";
   message: string;
 }
 
-export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ErrorResponse;
+export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ErrorResponse;
 
 // --- Connection status ---
 
@@ -62,7 +85,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 // --- Runtime parsing helpers ---
 
-const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "error"]);
+const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "error"]);
 
 export function parseNativeResponse(raw: unknown): NativeResponse {
   if (raw === null || raw === undefined || typeof raw !== "object") {
@@ -97,6 +120,40 @@ export function parseNativeResponse(raw: unknown): NativeResponse {
         throw new Error("list_collections_result missing 'collections' array");
       }
       return { type: "list_collections_result", collections: obj.collections as string[] };
+    }
+    case "list_result": {
+      if (!Array.isArray(obj.bookmarks)) {
+        throw new Error("list_result missing 'bookmarks' array");
+      }
+      const validStates = new Set(["inbox", "processed", "archived"]);
+      const bookmarks = (obj.bookmarks as unknown[]).map((item, i) => {
+        if (item === null || item === undefined || typeof item !== "object") {
+          throw new Error(`list_result bookmark[${i}] is not an object`);
+        }
+        const b = item as Record<string, unknown>;
+        if (typeof b.id !== "string" || typeof b.url !== "string" || typeof b.title !== "string" ||
+            typeof b.state !== "string" || !validStates.has(b.state) ||
+            !Array.isArray(b.user_tags) || !Array.isArray(b.suggested_tags) ||
+            typeof b.saved_at !== "string") {
+          throw new Error(`list_result bookmark[${i}] has invalid or missing fields`);
+        }
+        if (!(b.user_tags as unknown[]).every((t) => typeof t === "string")) {
+          throw new Error(`list_result bookmark[${i}] has non-string user_tags`);
+        }
+        if (!(b.suggested_tags as unknown[]).every((t) => typeof t === "string")) {
+          throw new Error(`list_result bookmark[${i}] has non-string suggested_tags`);
+        }
+        return {
+          id: b.id,
+          url: b.url,
+          title: b.title,
+          state: b.state as BookmarkStateFilter,
+          user_tags: b.user_tags as string[],
+          suggested_tags: b.suggested_tags as string[],
+          saved_at: b.saved_at,
+        };
+      });
+      return { type: "list_result", bookmarks };
     }
     case "error": {
       if (typeof obj.message !== "string") {
@@ -134,7 +191,13 @@ export interface RuntimeListCollectionsMessage {
   type: "list_collections";
 }
 
-export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage;
+export interface RuntimeListMessage {
+  type: "list";
+  limit?: number;
+  state?: BookmarkStateFilter;
+}
+
+export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage;
 
 export interface RuntimeSuccessResponse {
   success: true;

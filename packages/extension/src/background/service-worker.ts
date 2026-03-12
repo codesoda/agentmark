@@ -12,6 +12,7 @@ import { isErrorResponse } from "../shared/types";
 import { EXTENSION_NAME } from "../shared/constants";
 
 const CONTEXT_MENU_ID = "agentmark-save";
+const SIDEPANEL_MENU_ID = "agentmark-sidepanel";
 const SUPPORTED_SCHEMES = new Set(["http:", "https:"]);
 
 // --- Context menu ---
@@ -22,6 +23,11 @@ function ensureContextMenu(): void {
       id: CONTEXT_MENU_ID,
       title: `Save to ${EXTENSION_NAME}`,
       contexts: ["page", "selection"],
+    });
+    chrome.contextMenus.create({
+      id: SIDEPANEL_MENU_ID,
+      title: `Open ${EXTENSION_NAME} Side Panel`,
+      contexts: ["action"],
     });
   });
 }
@@ -92,6 +98,11 @@ function handleRuntimeMessage(
     return true;
   }
 
+  if (message.type === "list") {
+    handleNativeRequest({ type: "list", limit: message.limit, state: message.state }).then(sendResponse);
+    return true;
+  }
+
   sendResponse({ success: false, error: `Unknown message type: ${(message as Record<string, unknown>).type}` });
   return false;
 }
@@ -115,12 +126,36 @@ function showNotification(
   }
 }
 
+// --- Side panel helpers ---
+
+async function openSidePanel(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const windowId = tabs[0]?.windowId;
+    if (windowId !== undefined) {
+      await chrome.sidePanel.open({ windowId });
+    }
+  } catch {
+    // sidePanel.open may fail if no window context — fail silently
+  }
+}
+
+function handleCommand(command: string): void {
+  if (command === "open_side_panel") {
+    openSidePanel();
+  }
+}
+
 // --- Context menu click handler ---
 
 function handleContextMenuClick(
   info: chrome.contextMenus.OnClickData,
   tab?: chrome.tabs.Tab,
 ): void {
+  if (info.menuItemId === SIDEPANEL_MENU_ID) {
+    openSidePanel();
+    return;
+  }
   if (info.menuItemId !== CONTEXT_MENU_ID) return;
 
   const url = info.pageUrl ?? tab?.url;
@@ -167,6 +202,8 @@ chrome.runtime.onMessage.addListener(handleRuntimeMessage);
 
 chrome.contextMenus.onClicked.addListener(handleContextMenuClick);
 
+chrome.commands.onCommand.addListener(handleCommand);
+
 // Exported for testing
 export {
   ensureContextMenu,
@@ -174,6 +211,9 @@ export {
   handleRuntimeMessage,
   handleContextMenuClick,
   handleNativeRequest,
+  handleCommand,
+  openSidePanel,
   showNotification,
   CONTEXT_MENU_ID,
+  SIDEPANEL_MENU_ID,
 };

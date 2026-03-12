@@ -35,4 +35,24 @@ describe("manifest.json", () => {
   it("has popup entry point", () => {
     expect(manifest.action.default_popup).toBe("src/popup/index.html");
   });
+
+  it("has side_panel registration", () => {
+    expect(manifest.side_panel).toBeDefined();
+    expect(manifest.side_panel.default_path).toBe("src/sidepanel/index.html");
+  });
+
+  it("includes sidePanel permission", () => {
+    expect(manifest.permissions).toContain("sidePanel");
+  });
+
+  it("has open_side_panel command with keyboard shortcut", () => {
+    expect(manifest.commands.open_side_panel).toBeDefined();
+    expect(manifest.commands.open_side_panel.suggested_key.default).toBe("Ctrl+Shift+B");
+    expect(manifest.commands.open_side_panel.suggested_key.mac).toBe("Command+Shift+B");
+  });
+
+  it("preserves _execute_action command for popup", () => {
+    expect(manifest.commands._execute_action).toBeDefined();
+    expect(manifest.commands._execute_action.suggested_key.default).toBe("Ctrl+Shift+S");
+  });
 });

@@ -3,7 +3,7 @@
  * Keeps callback-style Chrome APIs out of React components.
  */
 
-import type { RuntimeMessage, RuntimeResponse, RuntimeSaveMessage } from "./types";
+import type { BookmarkSummary, BookmarkStateFilter, RuntimeMessage, RuntimeResponse, RuntimeSaveMessage } from "./types";
 
 export interface ActiveTab {
   url: string;
@@ -65,8 +65,11 @@ function parseRuntimeResponse(raw: unknown): RuntimeResponse {
     return { success: false, error: "Invalid response from service worker" };
   }
   const obj = raw as Record<string, unknown>;
-  if (obj.success === true && obj.data !== undefined) {
+  if (obj.success === true && obj.data !== null && obj.data !== undefined && typeof obj.data === "object") {
     return { success: true, data: obj.data } as RuntimeResponse;
+  }
+  if (obj.success === true) {
+    return { success: false, error: "Malformed data in service worker response" };
   }
   if (obj.success === false && typeof obj.error === "string") {
     return { success: false, error: obj.error };
@@ -92,6 +95,29 @@ export async function sendSaveMessage(
     ...options,
   };
   return sendRuntimeMessage(message);
+}
+
+export interface ListBookmarksResult {
+  bookmarks: BookmarkSummary[];
+  error?: string;
+}
+
+export async function sendListBookmarksMessage(options?: {
+  limit?: number;
+  state?: BookmarkStateFilter;
+}): Promise<ListBookmarksResult> {
+  const response = await sendRuntimeMessage({
+    type: "list",
+    limit: options?.limit,
+    state: options?.state,
+  });
+  if (response.success && response.data.type === "list_result") {
+    return { bookmarks: response.data.bookmarks };
+  }
+  const error = response.success
+    ? `Unexpected response type: ${response.data.type}`
+    : response.error;
+  return { bookmarks: [], error };
 }
 
 export async function sendListCollectionsMessage(): Promise<string[]> {

@@ -29,6 +29,13 @@
         "mac": "Command+Shift+S"
       },
       "description": "Save current page to AgentMark"
+    },
+    "open_side_panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+B",
+        "mac": "Command+Shift+B"
+      },
+      "description": "Open AgentMark Side Panel"
     }
   }
 }

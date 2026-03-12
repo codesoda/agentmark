@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::models::BookmarkState;
+
 /// Errors when converting a raw JSON value into a typed message.
 #[derive(Debug, Error)]
 pub enum MessageError {
@@ -52,6 +54,13 @@ pub enum IncomingMessage {
     Status,
     /// List existing collections.
     ListCollections,
+    /// List recent bookmarks with optional filtering.
+    List {
+        #[serde(default)]
+        limit: Option<u32>,
+        #[serde(default)]
+        state: Option<BookmarkState>,
+    },
 }
 
 /// Messages sent from the native host back to the Chrome extension.
@@ -68,8 +77,22 @@ pub enum OutgoingMessage {
     StatusResult { ok: bool, version: String },
     /// Result of a collection listing.
     ListCollectionsResult { collections: Vec<String> },
+    /// Result of a bookmark listing.
+    ListResult { bookmarks: Vec<BookmarkSummary> },
     /// Error response for any failed operation.
     Error { message: String },
+}
+
+/// Narrow DTO for bookmark list responses — only fields needed for list rendering.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookmarkSummary {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub state: BookmarkState,
+    pub user_tags: Vec<String>,
+    pub suggested_tags: Vec<String>,
+    pub saved_at: String,
 }
 
 impl OutgoingMessage {
@@ -96,7 +119,7 @@ impl IncomingMessage {
             .ok_or(MessageError::MissingType)?;
 
         match type_str {
-            "save" | "status" | "list_collections" => {
+            "save" | "status" | "list_collections" | "list" => {
                 // Use serde for full field validation.
                 serde_json::from_value(value)
                     .map_err(|e| MessageError::InvalidFields(e.to_string()))
@@ -348,6 +371,97 @@ mod tests {
         let value = msg.to_value().unwrap();
         assert_eq!(value["type"], "list_collections_result");
         assert!(value["collections"].as_array().unwrap().is_empty());
+    }
+
+    // -- List --
+
+    #[test]
+    fn deserialize_list_minimal() {
+        let value = json!({"type": "list"});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        assert_eq!(
+            msg,
+            IncomingMessage::List {
+                limit: None,
+                state: None,
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_list_with_limit_and_state() {
+        let value = json!({"type": "list", "limit": 25, "state": "inbox"});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        assert_eq!(
+            msg,
+            IncomingMessage::List {
+                limit: Some(25),
+                state: Some(BookmarkState::Inbox),
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_list_with_all_states() {
+        for (state_str, state_val) in [
+            ("inbox", BookmarkState::Inbox),
+            ("processed", BookmarkState::Processed),
+            ("archived", BookmarkState::Archived),
+        ] {
+            let value = json!({"type": "list", "state": state_str});
+            let msg = IncomingMessage::from_value(value).unwrap();
+            assert_eq!(
+                msg,
+                IncomingMessage::List {
+                    limit: None,
+                    state: Some(state_val),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn deserialize_list_invalid_state_returns_error() {
+        let value = json!({"type": "list", "state": "deleted"});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(
+            matches!(err, MessageError::InvalidFields(_)),
+            "expected InvalidFields, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn serialize_list_result() {
+        let msg = OutgoingMessage::ListResult {
+            bookmarks: vec![BookmarkSummary {
+                id: "am_123".into(),
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                state: BookmarkState::Inbox,
+                user_tags: vec!["rust".into()],
+                suggested_tags: vec!["dev".into()],
+                saved_at: "2026-03-12T00:00:00Z".into(),
+            }],
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "list_result");
+        let bookmarks = value["bookmarks"].as_array().unwrap();
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0]["id"], "am_123");
+        assert_eq!(bookmarks[0]["url"], "https://example.com");
+        assert_eq!(bookmarks[0]["title"], "Example");
+        assert_eq!(bookmarks[0]["state"], "inbox");
+        assert_eq!(bookmarks[0]["user_tags"][0], "rust");
+        assert_eq!(bookmarks[0]["suggested_tags"][0], "dev");
+        assert_eq!(bookmarks[0]["saved_at"], "2026-03-12T00:00:00Z");
+    }
+
+    #[test]
+    fn serialize_list_result_empty() {
+        let msg = OutgoingMessage::ListResult { bookmarks: vec![] };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "list_result");
+        assert!(value["bookmarks"].as_array().unwrap().is_empty());
     }
 
     #[test]

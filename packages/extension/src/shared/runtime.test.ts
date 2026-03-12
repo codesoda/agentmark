@@ -4,6 +4,7 @@ import {
   queryActiveTab,
   sendSaveMessage,
   sendListCollectionsMessage,
+  sendListBookmarksMessage,
   isConnectionError,
   isSupportedUrl,
   loadLastUsedIntent,
@@ -360,6 +361,115 @@ describe("querySelectedText", () => {
 
     const text = await querySelectedText(42);
     expect(text).toBe("");
+  });
+});
+
+describe("sendListBookmarksMessage", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("sends list message with default params", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: { type: "list_result", bookmarks: [] },
+    });
+
+    const result = await sendListBookmarksMessage();
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "list",
+      limit: undefined,
+      state: undefined,
+    });
+    expect(result).toEqual({ bookmarks: [] });
+  });
+
+  it("passes limit and state to runtime message", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: { type: "list_result", bookmarks: [] },
+    });
+
+    await sendListBookmarksMessage({ limit: 25, state: "inbox" });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "list",
+      limit: 25,
+      state: "inbox",
+    });
+  });
+
+  it("returns bookmarks from successful response", async () => {
+    const bookmarks = [
+      {
+        id: "am_123",
+        url: "https://example.com",
+        title: "Example",
+        state: "inbox",
+        user_tags: ["rust"],
+        suggested_tags: [],
+        saved_at: "2026-03-12T00:00:00Z",
+      },
+    ];
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: { type: "list_result", bookmarks },
+    });
+
+    const result = await sendListBookmarksMessage();
+    expect(result.bookmarks).toEqual(bookmarks);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("returns error on failure response", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: false,
+      error: "not initialized",
+    });
+
+    const result = await sendListBookmarksMessage();
+    expect(result.bookmarks).toEqual([]);
+    expect(result.error).toBe("not initialized");
+  });
+
+  it("returns error on unexpected response type", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: { type: "status_result", ok: true, version: "0.1.0" },
+    });
+
+    const result = await sendListBookmarksMessage();
+    expect(result.bookmarks).toEqual([]);
+    expect(result.error).toContain("Unexpected response type");
+  });
+
+  it("returns error when sendMessage throws", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockRejectedValue(new Error("disconnected"));
+
+    const result = await sendListBookmarksMessage();
+    expect(result.bookmarks).toEqual([]);
+    expect(result.error).toBe("disconnected");
+  });
+
+  it("returns error when success response has non-object data", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: "not-an-object",
+    });
+
+    const result = await sendListBookmarksMessage();
+    expect(result.bookmarks).toEqual([]);
+    expect(result.error).toBeDefined();
+  });
+
+  it("returns error when success response has null data", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: null,
+    });
+
+    const result = await sendListBookmarksMessage();
+    expect(result.bookmarks).toEqual([]);
+    expect(result.error).toBeDefined();
   });
 });
 

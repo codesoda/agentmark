@@ -41,6 +41,9 @@
 - Background service worker (`src/background/service-worker.ts`) is the sole bridge to native messaging — thin MV3 wiring that delegates to `src/shared/native-messaging.ts` for port lifecycle
 - Native messaging client (`src/shared/native-messaging.ts`) owns `connectNative()`, FIFO response matching, reconnect policy, and connection status — no other module should touch the native port directly
 - Wire-contract types (`src/shared/types.ts`) mirror the Rust `native::messages` schema exactly (snake_case fields, same discriminator tags) — do not introduce camelCase alternatives
+- Popup owns toolbar action click (`_execute_action` command) — sidepanel open is additive via action-context menu item and named `open_side_panel` command. Do not use `openPanelOnActionClick` or it will regress the popup
+- Side panel (`src/sidepanel/`) uses list/detail view state without a router — `SidePanel.tsx` is the stateful container, `BookmarkList.tsx` and `BookmarkCard.tsx` are presentational
+- Native list requests use a narrow `BookmarkSummary` DTO (DB-only, no bundle reads) — keep list payloads bounded and filter server-side
 - Test setup (`src/test/chrome-mock.ts`) provides lightweight Chrome API mocks for vitest — use `resetChromeMock()` in `beforeEach` and `createMockPort()` for port lifecycle tests
 
 ## CI

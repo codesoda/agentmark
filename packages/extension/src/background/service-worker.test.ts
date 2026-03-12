@@ -23,7 +23,10 @@ import {
   handleRuntimeMessage,
   handleContextMenuClick,
   handleNativeRequest,
+  handleCommand,
+  openSidePanel,
   CONTEXT_MENU_ID,
+  SIDEPANEL_MENU_ID,
 } from "./service-worker";
 import { getNativeClient } from "../shared/native-messaging";
 
@@ -446,6 +449,165 @@ describe("service-worker", () => {
         success: true,
         data: nativeResponse,
       });
+    });
+  });
+
+  describe("handleRuntimeMessage - list", () => {
+    it("forwards list message to native client", async () => {
+      const mockClient = getMockClient();
+      const nativeResponse = {
+        type: "list_result" as const,
+        bookmarks: [
+          {
+            id: "am_123",
+            url: "https://example.com",
+            title: "Example",
+            state: "inbox" as const,
+            user_tags: [],
+            suggested_tags: [],
+            saved_at: "2026-03-12T00:00:00Z",
+          },
+        ],
+      };
+      mockClient.sendRequest.mockResolvedValue(nativeResponse);
+
+      const sendResponse = vi.fn();
+      const result = handleRuntimeMessage(
+        { type: "list", limit: 25, state: "inbox" },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      expect(result).toBe(true);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(sendResponse).toHaveBeenCalledWith({
+        success: true,
+        data: nativeResponse,
+      });
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({
+        type: "list",
+        limit: 25,
+        state: "inbox",
+      });
+    });
+
+    it("forwards list message without optional params", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "list_result" as const,
+        bookmarks: [],
+      });
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(
+        { type: "list" },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({
+        type: "list",
+        limit: undefined,
+        state: undefined,
+      });
+    });
+  });
+
+  describe("handleCommand", () => {
+    it("opens side panel for open_side_panel command", async () => {
+      chromeMock.tabs.query.mockResolvedValue([
+        { windowId: 42, url: "https://example.com" },
+      ]);
+
+      handleCommand("open_side_panel");
+
+      await vi.waitFor(() =>
+        expect(chromeMock.sidePanel.open).toHaveBeenCalledWith({ windowId: 42 }),
+      );
+    });
+
+    it("ignores unknown commands", () => {
+      handleCommand("unknown_command");
+      expect(chromeMock.sidePanel.open).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("openSidePanel", () => {
+    it("opens side panel with current window ID", async () => {
+      chromeMock.tabs.query.mockResolvedValue([
+        { windowId: 99, url: "https://example.com" },
+      ]);
+
+      await openSidePanel();
+      expect(chromeMock.sidePanel.open).toHaveBeenCalledWith({ windowId: 99 });
+    });
+
+    it("does not throw when no active tab", async () => {
+      chromeMock.tabs.query.mockResolvedValue([]);
+
+      await openSidePanel();
+      expect(chromeMock.sidePanel.open).not.toHaveBeenCalled();
+    });
+
+    it("does not throw when sidePanel.open fails", async () => {
+      chromeMock.tabs.query.mockResolvedValue([
+        { windowId: 42, url: "https://example.com" },
+      ]);
+      chromeMock.sidePanel.open.mockRejectedValue(new Error("No window"));
+
+      await openSidePanel();
+      // Should not throw
+    });
+  });
+
+  describe("handleContextMenuClick - sidepanel", () => {
+    it("opens side panel for sidepanel menu item", async () => {
+      chromeMock.tabs.query.mockResolvedValue([
+        { windowId: 42, url: "https://example.com" },
+      ]);
+
+      handleContextMenuClick(
+        { menuItemId: SIDEPANEL_MENU_ID, editable: false } as chrome.contextMenus.OnClickData,
+      );
+
+      await vi.waitFor(() =>
+        expect(chromeMock.sidePanel.open).toHaveBeenCalledWith({ windowId: 42 }),
+      );
+    });
+
+    it("still handles save menu item correctly", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "save_result" as const,
+        id: "abc",
+        path: "/tmp",
+        status: "created",
+      });
+
+      handleContextMenuClick(
+        {
+          menuItemId: CONTEXT_MENU_ID,
+          pageUrl: "https://example.com",
+          editable: false,
+        } as chrome.contextMenus.OnClickData,
+        { title: "Example" } as chrome.tabs.Tab,
+      );
+
+      await vi.waitFor(() => expect(mockClient.sendRequest).toHaveBeenCalled());
+    });
+  });
+
+  describe("ensureContextMenu - sidepanel entry", () => {
+    it("creates sidepanel context menu item with action context", () => {
+      ensureContextMenu();
+
+      expect(chromeMock.contextMenus.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: SIDEPANEL_MENU_ID,
+          contexts: ["action"],
+        }),
+      );
     });
   });
 });
