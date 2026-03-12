@@ -107,6 +107,31 @@ pub fn read_message(reader: &mut dyn Read) -> Result<serde_json::Value, Protocol
     Ok(value)
 }
 
+/// Drain exactly `size` bytes from `reader`, discarding them.
+///
+/// Used to recover stream alignment after a `MessageTooLarge` error.
+/// Returns `Ok(())` if all bytes were consumed, or a `ProtocolError`
+/// if the stream ends or fails before all bytes are read.
+pub fn drain_payload(reader: &mut dyn Read, size: u32) -> Result<(), ProtocolError> {
+    let mut remaining = size as u64;
+    let mut scratch = [0u8; 8192];
+    while remaining > 0 {
+        let to_read = (remaining as usize).min(scratch.len());
+        match reader.read(&mut scratch[..to_read]) {
+            Ok(0) => {
+                return Err(ProtocolError::UnexpectedEof {
+                    expected: size as usize,
+                    read: (size as u64 - remaining) as usize,
+                });
+            }
+            Ok(n) => remaining -= n as u64,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(ProtocolError::Io(e)),
+        }
+    }
+    Ok(())
+}
+
 /// Write a single length-prefixed JSON message to `writer` and flush.
 ///
 /// Serializes `value` to JSON bytes, writes the 4-byte little-endian

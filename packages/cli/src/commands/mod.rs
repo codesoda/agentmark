@@ -1,6 +1,7 @@
 pub mod collections;
 pub mod init;
 pub mod list;
+pub mod native_host;
 pub mod open;
 pub mod reprocess;
 pub mod save;
@@ -22,13 +23,6 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Collections => collections::run_collections(),
         Commands::Open(args) => open::run_open(args),
         Commands::Reprocess(args) => reprocess::run_reprocess(args),
-        Commands::NativeHost => {
-            placeholder("native-host");
-            Ok(())
-        }
+        Commands::NativeHost => native_host::run_native_host(),
     }
-}
-
-fn placeholder(command: &str) {
-    println!("agentmark {command}: not yet implemented");
 }

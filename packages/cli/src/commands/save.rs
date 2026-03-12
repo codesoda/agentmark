@@ -166,13 +166,33 @@ struct NormalizedInputs {
     action: Option<String>,
 }
 
-impl NormalizedInputs {
-    fn from_args(args: &SaveArgs) -> Self {
+// ── Transport-neutral save input ────────────────────────────────────
+
+/// Transport-neutral save request shared by CLI and native-host callers.
+/// Keeps the save pipeline independent of CLI arg shapes or native message schemas.
+pub(crate) struct SaveRequest {
+    pub url: String,
+    pub tags: Vec<String>,
+    pub collection: Option<String>,
+    pub note: Option<String>,
+    pub action: Option<String>,
+    pub capture_source: CaptureSource,
+    pub provided_title: Option<String>,
+    pub no_enrich: bool,
+}
+
+impl SaveRequest {
+    /// Adapt CLI args into a transport-neutral save request.
+    pub(crate) fn from_cli(args: &SaveArgs) -> Self {
         Self {
+            url: args.url.clone(),
             tags: parse_tags(args.tags.as_deref()),
             collection: normalize_optional_text(args.collection.as_deref()),
             note: normalize_optional_text(args.note.as_deref()),
             action: normalize_optional_text(args.action.as_deref()),
+            capture_source: CaptureSource::Cli,
+            provided_title: None,
+            no_enrich: args.no_enrich,
         }
     }
 }
@@ -217,17 +237,21 @@ fn fetch_and_extract(url: &str) -> Result<FetchedPage, SaveError> {
 
 // ── Bookmark construction ───────────────────────────────────────────
 
-/// Build a new Bookmark from CLI args, fetched metadata, and extraction output.
+/// Build a new Bookmark from fetched metadata, extraction output, and normalized inputs.
 fn build_bookmark(
     url: &str,
     canonical_url: &str,
     page: &FetchedPage,
     inputs: &NormalizedInputs,
+    capture_source: CaptureSource,
+    provided_title: Option<&str>,
 ) -> Bookmark {
+    // Title priority: page metadata > caller-provided title > URL fallback
     let title = page
         .metadata
         .title
         .clone()
+        .or_else(|| provided_title.map(|s| s.to_string()))
         .unwrap_or_else(|| url.to_string());
 
     let mut bm = Bookmark::new(url, &title);
@@ -239,7 +263,7 @@ fn build_bookmark(
     bm.site_name = page.metadata.site_name.clone();
     bm.published_at = page.metadata.published_at.clone();
 
-    // CLI inputs
+    // User inputs
     bm.user_tags = inputs.tags.clone();
     if let Some(ref c) = inputs.collection {
         bm.collections = vec![c.clone()];
@@ -251,8 +275,8 @@ fn build_bookmark(
     bm.content_status = page.content_status.clone();
     bm.content_hash = Some(page.extraction.content_hash.clone());
 
-    // CLI capture source
-    bm.capture_source = CaptureSource::Cli;
+    // Capture source
+    bm.capture_source = capture_source;
 
     bm
 }
@@ -328,7 +352,7 @@ impl PostSaveContext {
 
 // ── Default provider factory ─────────────────────────────────────────
 
-fn default_provider_factory(
+pub(crate) fn default_provider_factory(
     default_agent: &str,
     system_prompt: Option<&str>,
 ) -> Result<Box<dyn crate::agent::AgentProvider>, crate::agent::AgentError> {
@@ -349,6 +373,16 @@ pub(crate) fn execute_save_with_deps(
     args: &SaveArgs,
     provider_factory: &ProviderFactory,
 ) -> Result<SaveOutcome, SaveError> {
+    let req = SaveRequest::from_cli(args);
+    execute_save_request(home, &req, provider_factory)
+}
+
+/// Transport-neutral save pipeline used by both CLI and native-host callers.
+pub(crate) fn execute_save_request(
+    home: &Path,
+    req: &SaveRequest,
+    provider_factory: &ProviderFactory,
+) -> Result<SaveOutcome, SaveError> {
     // 1. Load config
     let config = Config::load(home)?;
 
@@ -357,11 +391,16 @@ pub(crate) fn execute_save_with_deps(
     let conn = db::open_and_migrate(&db_path).map_err(SaveError::Db)?;
     let repo = BookmarkRepository::new(&conn);
 
-    // 3. Normalize CLI inputs once
-    let inputs = NormalizedInputs::from_args(args);
+    // 3. Build normalized inputs from the request
+    let inputs = NormalizedInputs {
+        tags: req.tags.clone(),
+        collection: req.collection.clone(),
+        note: req.note.clone(),
+        action: req.action.clone(),
+    };
 
     // 4. Canonicalize the requested URL
-    let pre_fetch_canonical = canonical::canonicalize(&args.url)?;
+    let pre_fetch_canonical = canonical::canonicalize(&req.url)?;
 
     // 5. Initial duplicate check by canonical URL
     let initial_duplicate = repo
@@ -369,7 +408,7 @@ pub(crate) fn execute_save_with_deps(
         .map_err(SaveError::Db)?;
 
     // 6. Fetch page and extract content
-    let page = fetch_and_extract(&args.url)?;
+    let page = fetch_and_extract(&req.url)?;
     let mut warnings = Vec::new();
     if let Some(w) = &page.extraction_warning {
         warnings.push(w.clone());
@@ -402,16 +441,18 @@ pub(crate) fn execute_save_with_deps(
         None => handle_new_save(
             &config,
             &repo,
-            &args.url,
+            &req.url,
             &final_canonical,
             &page,
             &inputs,
+            req.capture_source.clone(),
+            req.provided_title.as_deref(),
             warnings,
         )?,
     };
 
     // 10. Run enrichment (best-effort, after durable save)
-    let enrich_eligible = !args.no_enrich && ctx.dedup != DedupResult::Unchanged;
+    let enrich_eligible = !req.no_enrich && ctx.dedup != DedupResult::Unchanged;
 
     if enrich_eligible {
         let outcome = enrich::enrich_bookmark(
@@ -436,6 +477,7 @@ pub(crate) fn execute_save_with_deps(
 
 // ── New save path ───────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn handle_new_save(
     config: &Config,
     repo: &BookmarkRepository<'_>,
@@ -443,9 +485,18 @@ fn handle_new_save(
     canonical_url: &str,
     page: &FetchedPage,
     inputs: &NormalizedInputs,
+    capture_source: CaptureSource,
+    provided_title: Option<&str>,
     warnings: Vec<String>,
 ) -> Result<PostSaveContext, SaveError> {
-    let bookmark = build_bookmark(url, canonical_url, page, inputs);
+    let bookmark = build_bookmark(
+        url,
+        canonical_url,
+        page,
+        inputs,
+        capture_source,
+        provided_title,
+    );
 
     let capture_source_str = match bookmark.capture_source {
         CaptureSource::Cli => "cli",
@@ -890,6 +941,8 @@ mod tests {
             "https://example.com/page",
             &page,
             &inputs,
+            CaptureSource::Cli,
+            None,
         );
 
         assert!(bm.id.starts_with("am_"));
@@ -933,6 +986,8 @@ mod tests {
             "https://example.com/page",
             &page,
             &inputs,
+            CaptureSource::Cli,
+            None,
         );
         assert_eq!(bm.title, "https://example.com/page");
     }
@@ -962,6 +1017,8 @@ mod tests {
             "https://example.com/",
             &page,
             &inputs,
+            CaptureSource::Cli,
+            None,
         );
         assert_eq!(bm.summary_status, SummaryStatus::Pending);
     }
@@ -1043,5 +1100,106 @@ mod tests {
             "should mention index update failure"
         );
         assert!(msg.contains("not found"), "should mention row not found");
+    }
+
+    // ── build_bookmark capture source and provided title ─────────────
+
+    #[test]
+    fn build_bookmark_chrome_extension_capture_source() {
+        let page = FetchedPage {
+            raw_html: String::new(),
+            metadata: PageMetadata {
+                title: Some("Page Title".to_string()),
+                ..Default::default()
+            },
+            extraction: ExtractionResult {
+                article_html: String::new(),
+                article_markdown: String::new(),
+                content_hash: "sha256:x".to_string(),
+            },
+            content_status: ContentStatus::Failed,
+            extraction_warning: None,
+        };
+        let inputs = NormalizedInputs {
+            tags: Vec::new(),
+            collection: None,
+            note: None,
+            action: None,
+        };
+
+        let bm = build_bookmark(
+            "https://example.com",
+            "https://example.com/",
+            &page,
+            &inputs,
+            CaptureSource::ChromeExtension,
+            None,
+        );
+        assert_eq!(bm.capture_source, CaptureSource::ChromeExtension);
+    }
+
+    #[test]
+    fn build_bookmark_provided_title_used_when_no_metadata_title() {
+        let page = FetchedPage {
+            raw_html: String::new(),
+            metadata: PageMetadata::default(),
+            extraction: ExtractionResult {
+                article_html: String::new(),
+                article_markdown: String::new(),
+                content_hash: "sha256:x".to_string(),
+            },
+            content_status: ContentStatus::Failed,
+            extraction_warning: None,
+        };
+        let inputs = NormalizedInputs {
+            tags: Vec::new(),
+            collection: None,
+            note: None,
+            action: None,
+        };
+
+        let bm = build_bookmark(
+            "https://example.com",
+            "https://example.com/",
+            &page,
+            &inputs,
+            CaptureSource::ChromeExtension,
+            Some("Extension Title"),
+        );
+        assert_eq!(bm.title, "Extension Title");
+    }
+
+    #[test]
+    fn build_bookmark_metadata_title_takes_priority_over_provided() {
+        let page = FetchedPage {
+            raw_html: String::new(),
+            metadata: PageMetadata {
+                title: Some("Metadata Title".to_string()),
+                ..Default::default()
+            },
+            extraction: ExtractionResult {
+                article_html: String::new(),
+                article_markdown: String::new(),
+                content_hash: "sha256:x".to_string(),
+            },
+            content_status: ContentStatus::Failed,
+            extraction_warning: None,
+        };
+        let inputs = NormalizedInputs {
+            tags: Vec::new(),
+            collection: None,
+            note: None,
+            action: None,
+        };
+
+        let bm = build_bookmark(
+            "https://example.com",
+            "https://example.com/",
+            &page,
+            &inputs,
+            CaptureSource::ChromeExtension,
+            Some("Extension Title"),
+        );
+        assert_eq!(bm.title, "Metadata Title");
     }
 }
