@@ -2,12 +2,13 @@ pub mod collections;
 pub mod init;
 pub mod list;
 pub mod open;
+pub mod reprocess;
 pub mod save;
 pub mod search;
 pub mod show;
 pub mod tag;
 
-use crate::cli::{Commands, ReprocessArgs};
+use crate::cli::Commands;
 
 /// Execute the parsed CLI command.
 pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
@@ -20,10 +21,7 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Tag(args) => tag::run_tag(args),
         Commands::Collections => collections::run_collections(),
         Commands::Open(args) => open::run_open(args),
-        Commands::Reprocess(args) => {
-            dispatch_reprocess(args);
-            Ok(())
-        }
+        Commands::Reprocess(args) => reprocess::run_reprocess(args),
         Commands::NativeHost => {
             placeholder("native-host");
             Ok(())
@@ -33,9 +31,4 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
 
 fn placeholder(command: &str) {
     println!("agentmark {command}: not yet implemented");
-}
-
-fn dispatch_reprocess(args: ReprocessArgs) {
-    let _ = (&args.id, args.all);
-    placeholder("reprocess");
 }

@@ -490,6 +490,14 @@ impl<'a> BookmarkRepository<'a> {
         Ok(updated > 0)
     }
 
+    /// Count all bookmarks.
+    pub fn count_bookmarks(&self) -> Result<usize, DbError> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM bookmarks", [], |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
     /// Update bookmark enrichment fields and DB-internal summary in a single write.
     ///
     /// This avoids double FTS trigger churn from separate `update()` + `set_summary()` calls.
@@ -1270,5 +1278,25 @@ mod tests {
         assert!(loaded.user_tags.is_empty());
         assert!(loaded.suggested_tags.is_empty());
         assert!(loaded.collections.is_empty());
+    }
+
+    // ── count_bookmarks ─────────────────────────────────────────────
+
+    #[test]
+    fn count_bookmarks_empty_db() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        assert_eq!(repo.count_bookmarks().unwrap(), 0);
+    }
+
+    #[test]
+    fn count_bookmarks_returns_correct_count() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm1 = sample_bookmark("https://example.com/1", "One");
+        let bm2 = sample_bookmark("https://example.com/2", "Two");
+        repo.insert(&bm1).unwrap();
+        repo.insert(&bm2).unwrap();
+        assert_eq!(repo.count_bookmarks().unwrap(), 2);
     }
 }
