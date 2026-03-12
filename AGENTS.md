@@ -4,11 +4,28 @@
 
 - `packages/cli/` — Rust CLI (`agentmark` binary), built with `cargo build`
 - `packages/extension/` — Chrome MV3 extension (React + Vite + Tailwind + TypeScript)
+- `packages/skill/` — Cross-agent skill definition and installer
 
 ## Rust CLI
 
 - Workspace root `Cargo.toml` with single member `packages/cli`
+- Lib/bin split: `src/lib.rs` exposes `agent`, `bundle`, `canonical`, `cli`, `commands`, `config`, `db`, `display`, `enrich`, `extract`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
+- Agent layer lives in `src/agent/` (`mod.rs`, `provider.rs`, `prompt.rs`, `claude.rs`, `codex.rs`) — LLM provider abstraction for enrichment via local CLI subprocesses. Uses an injected `ProcessRunner` trait for testable subprocess invocation. Providers are selected by `create_provider()` factory based on `config.default_agent`. Tests use mock runners rather than real CLIs or PATH mutation
+- Canonical layer lives in `src/canonical.rs` — pure URL normalization (strip tracking params, normalize host/scheme/slashes, sort query params), depends only on `url` crate
+- Domain model types live in `src/models/` (`bookmark.rs`, `event.rs`) — pure data + serde, no I/O or config coupling
+- Database layer lives in `src/db/` (`mod.rs`, `schema.rs`, `repository.rs`) — SQLite + FTS5 index, depends on `models` only
+- Display layer lives in `src/display.rs` — shared terminal display helpers for list/show/search output (truncation, tag merging, width detection, color capability, list row formatting, show detail formatting). Pure functions returning strings; commands print
+- Bundle layer lives in `src/bundle/` (`mod.rs`, `bookmark_md.rs`, `writer.rs`) — filesystem bundle creation + in-place updates + bookmark.md rendering + event append + read helpers (`read_article_md`, `read_body_sections`), depends on `models` + `fetch::PageMetadata`. `Bundle::find` locates existing bundles by `saved_at` + `id` suffix; update helpers preserve body sections during front-matter changes
+- Extract layer lives in `src/extract/` (`mod.rs`, `readability.rs`, `to_markdown.rs`) — article extraction + markdown conversion + content hashing, depends only on readability/scraper/sha2
+- Fetch layer lives in `src/fetch/` (`mod.rs`, `metadata.rs`) — HTTP fetch + metadata extraction, depends only on reqwest/scraper/url
+- Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
+- DB layer accepts explicit paths/connections; `config.rs` remains the only HOME-aware module
+- Commands are in `src/commands/` module tree (`init.rs`, `save.rs`, `list.rs`, `show.rs`, `search.rs`, `tag.rs`, `collections.rs`, `open.rs`, `reprocess.rs`)
+- Shared detail/update helper lives in `src/commands/bookmark_detail.rs` — canonical DB+bundle detail loading and typed update application used by both `show.rs` (CLI) and `native_host.rs` (extension). Do not duplicate detail assembly logic in command handlers
+- Command handlers return `Result<()>` — `main.rs` converts errors to stderr + non-zero exit
+- Save command (`commands/save.rs`) is the integration boundary for canonical → fetch → extract → bundle → DB; uses typed `SaveError`/`SaveOutcome`/`DedupResult` with two-stage canonical dedup (pre-fetch + post-fetch), three-way branching (new/unchanged/changed), merge semantics for user-owned fields, and partial-save semantics (bundle preserved if DB update fails)
 - Run checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test`
+- Tests use `tempfile` for temp HOME dirs and `assert_cmd` for binary integration tests
 
 ## Chrome Extension
 
@@ -18,14 +35,42 @@
   - `npm run typecheck` — TypeScript strict checking via `tsc --noEmit`
   - `npm run build` — Vite multi-entry build producing `dist/`
   - `npm run lint` — ESLint with flat config
+  - `npm run test` — Vitest unit tests (Node environment with Chrome API mocks)
 - `manifest.json` is static (root of `packages/extension/`), copied into `dist/` by `vite-plugin-static-copy`
 - Build outputs three entries: popup HTML, sidepanel HTML, background service worker (`background.js`)
 - Internal seams: `src/background/`, `src/popup/`, `src/sidepanel/`, `src/shared/`
 - Shared constants and types live in `src/shared/` — popup and sidepanel import from shared, never from each other
-- Background service worker is the sole bridge to native messaging (Specs 17-19)
+- Background service worker (`src/background/service-worker.ts`) is the sole bridge to native messaging — thin MV3 wiring that delegates to `src/shared/native-messaging.ts` for port lifecycle
+- Native messaging client (`src/shared/native-messaging.ts`) owns `connectNative()`, FIFO response matching, reconnect policy, and connection status — no other module should touch the native port directly
+- Wire-contract types (`src/shared/types.ts`) mirror the Rust `native::messages` schema exactly (snake_case fields, same discriminator tags) — do not introduce camelCase alternatives
+- Popup owns toolbar action click (`_execute_action` command) — sidepanel open is additive via action-context menu item and named `open_side_panel` command. Do not use `openPanelOnActionClick` or it will regress the popup
+- Side panel (`src/sidepanel/`) uses list/detail view state without a router — `SidePanel.tsx` is the stateful container, `BookmarkList.tsx`, `BookmarkCard.tsx`, `BookmarkDetail.tsx`, `TagManager.tsx`, and `EditableField.tsx` are presentational
+- Native list requests use a narrow `BookmarkSummary` DTO (DB-only, no bundle reads) — keep list payloads bounded and filter server-side
+- Native detail requests use a `BookmarkDetail` DTO (DB + bundle summary, no article body) — keep detail payloads bounded
+- Shared form controls (`src/shared/TagInput.tsx`, `src/shared/CollectionSelect.tsx`) are used by both popup and sidepanel — popup re-exports from shared. Do not copy form controls into sidepanel or popup; edit the shared originals
+- Test setup (`src/test/chrome-mock.ts`) provides lightweight Chrome API mocks for vitest — use `resetChromeMock()` in `beforeEach` and `createMockPort()` for port lifecycle tests
+
+## Cross-Agent Skill
+
+- `packages/skill/agentmark.md` — skill prompt (spec-facing source of truth)
+- `packages/skill/SKILL.md` — byte-for-byte mirror for agent loader compatibility (enforced by test)
+- `packages/skill/install-skill.sh` — installs canonical copy to `~/.agents/skills/agentmark/` and symlinks into detected agent roots (`~/.claude/skills/`, `~/.codex/skills/`)
+- Environment overrides for testing: `AGENTMARK_SHARED_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `CODEX_SKILLS_DIR`
+## Installer
+
+- `install.sh` — Root installer script (POSIX shell). Supports both repo-local and bootstrap (`curl | bash`) execution
+- Builds CLI via `cargo build --release`, installs binary to `~/.agentmark/bin/agentmark`, symlinks to `~/.local/bin/agentmark`
+- Builds extension via `npm ci` + `npm run build`, copies to durable `~/.agentmark/extension/`
+- Registers Chrome native messaging host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.agentmark.native.json`
+- Delegates skill installation to `packages/skill/install-skill.sh` — do not duplicate agent-root detection
+- Flags: `--skip-init`, `--skip-extension`, `--extension-id ID`
+- Env overrides: `AGENTMARK_EXTENSION_ID`, `AGENTMARK_HOME`, `AGENTMARK_LOCAL_BIN`
+- Uses global variables for inter-function communication (not stdout capture) since display functions write to stdout
+- Tests in `packages/cli/tests/install_script_tests.rs` use temp repo fixtures with fake cargo/npm shims
 
 ## CI
 
 - GitHub Actions workflow: `.github/workflows/ci.yml`
-- Two jobs: `rust` (fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint)
+- Two jobs: `rust` (fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint, test)
+- CI jobs run on `ubuntu-latest`, so macOS-specific CLI behaviors need an injectable or overrideable seam for tests instead of assuming local macOS binaries exist in CI
 - Extension job auto-skips if `packages/extension/package.json` does not exist

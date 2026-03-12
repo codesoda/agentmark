@@ -17,6 +17,25 @@
     "activeTab",
     "contextMenus",
     "sidePanel",
-    "nativeMessaging"
-  ]
+    "nativeMessaging",
+    "notifications",
+    "storage",
+    "scripting"
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Save current page to AgentMark"
+    },
+    "open_side_panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+B",
+        "mac": "Command+Shift+B"
+      },
+      "description": "Open AgentMark Side Panel"
+    }
+  }
 }
