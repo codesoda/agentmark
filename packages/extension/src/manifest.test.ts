@@ -24,6 +24,14 @@ describe("manifest.json", () => {
     expect(manifest.permissions).toContain("nativeMessaging");
   });
 
+  it("includes storage permission for intent defaults", () => {
+    expect(manifest.permissions).toContain("storage");
+  });
+
+  it("includes scripting permission for selected text capture", () => {
+    expect(manifest.permissions).toContain("scripting");
+  });
+
   it("has popup entry point", () => {
     expect(manifest.action.default_popup).toBe("src/popup/index.html");
   });

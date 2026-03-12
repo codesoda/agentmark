@@ -40,6 +40,8 @@ pub enum IncomingMessage {
         #[serde(default)]
         tags: Option<Vec<String>>,
         #[serde(default)]
+        collection: Option<String>,
+        #[serde(default)]
         note: Option<String>,
         #[serde(default)]
         selected_text: Option<String>,
@@ -48,6 +50,8 @@ pub enum IncomingMessage {
     },
     /// Health check.
     Status,
+    /// List existing collections.
+    ListCollections,
 }
 
 /// Messages sent from the native host back to the Chrome extension.
@@ -62,6 +66,8 @@ pub enum OutgoingMessage {
     },
     /// Result of a health check.
     StatusResult { ok: bool, version: String },
+    /// Result of a collection listing.
+    ListCollectionsResult { collections: Vec<String> },
     /// Error response for any failed operation.
     Error { message: String },
 }
@@ -90,7 +96,7 @@ impl IncomingMessage {
             .ok_or(MessageError::MissingType)?;
 
         match type_str {
-            "save" | "status" => {
+            "save" | "status" | "list_collections" => {
                 // Use serde for full field validation.
                 serde_json::from_value(value)
                     .map_err(|e| MessageError::InvalidFields(e.to_string()))
@@ -121,6 +127,7 @@ mod tests {
             "url": "https://example.com",
             "title": "Example",
             "tags": ["rust", "cli"],
+            "collection": "reading",
             "note": "interesting",
             "selected_text": "some excerpt",
             "action": "read_later"
@@ -132,6 +139,7 @@ mod tests {
                 url: "https://example.com".into(),
                 title: Some("Example".into()),
                 tags: Some(vec!["rust".into(), "cli".into()]),
+                collection: Some("reading".into()),
                 note: Some("interesting".into()),
                 selected_text: Some("some excerpt".into()),
                 action: Some("read_later".into()),
@@ -149,6 +157,7 @@ mod tests {
                 url: "https://example.com".into(),
                 title: None,
                 tags: None,
+                collection: None,
                 note: None,
                 selected_text: None,
                 action: None,
@@ -292,6 +301,7 @@ mod tests {
             url: "https://example.com".into(),
             title: Some("Title".into()),
             tags: Some(vec!["a".into()]),
+            collection: Some("work".into()),
             note: None,
             selected_text: None,
             action: None,
@@ -306,5 +316,53 @@ mod tests {
         let msg = OutgoingMessage::error("エラー: 失敗しました 🚫");
         let value = msg.to_value().unwrap();
         assert_eq!(value["message"], "エラー: 失敗しました 🚫");
+    }
+
+    // -- ListCollections --
+
+    #[test]
+    fn deserialize_list_collections() {
+        let value = json!({"type": "list_collections"});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        assert_eq!(msg, IncomingMessage::ListCollections);
+    }
+
+    #[test]
+    fn serialize_list_collections_result() {
+        let msg = OutgoingMessage::ListCollectionsResult {
+            collections: vec!["reading".into(), "work".into()],
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "list_collections_result");
+        let cols = value["collections"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0], "reading");
+        assert_eq!(cols[1], "work");
+    }
+
+    #[test]
+    fn serialize_list_collections_result_empty() {
+        let msg = OutgoingMessage::ListCollectionsResult {
+            collections: vec![],
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "list_collections_result");
+        assert!(value["collections"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deserialize_save_with_collection() {
+        let value = json!({
+            "type": "save",
+            "url": "https://example.com",
+            "collection": "research"
+        });
+        let msg = IncomingMessage::from_value(value).unwrap();
+        match msg {
+            IncomingMessage::Save { collection, .. } => {
+                assert_eq!(collection, Some("research".into()));
+            }
+            _ => panic!("expected Save"),
+        }
     }
 }

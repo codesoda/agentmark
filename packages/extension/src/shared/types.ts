@@ -13,6 +13,7 @@ export interface SaveRequest {
   url: string;
   title?: string;
   tags?: string[];
+  collection?: string;
   note?: string;
   selected_text?: string;
   action?: string;
@@ -22,7 +23,11 @@ export interface StatusRequest {
   type: "status";
 }
 
-export type NativeRequest = SaveRequest | StatusRequest;
+export interface ListCollectionsRequest {
+  type: "list_collections";
+}
+
+export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest;
 
 // --- Incoming responses (Native Host → Extension) ---
 
@@ -39,12 +44,17 @@ export interface StatusResultResponse {
   version: string;
 }
 
+export interface ListCollectionsResultResponse {
+  type: "list_collections_result";
+  collections: string[];
+}
+
 export interface ErrorResponse {
   type: "error";
   message: string;
 }
 
-export type NativeResponse = SaveResultResponse | StatusResultResponse | ErrorResponse;
+export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ErrorResponse;
 
 // --- Connection status ---
 
@@ -52,7 +62,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 // --- Runtime parsing helpers ---
 
-const RESPONSE_TYPES = new Set(["save_result", "status_result", "error"]);
+const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "error"]);
 
 export function parseNativeResponse(raw: unknown): NativeResponse {
   if (raw === null || raw === undefined || typeof raw !== "object") {
@@ -82,6 +92,12 @@ export function parseNativeResponse(raw: unknown): NativeResponse {
       }
       return { type: "status_result", ok: obj.ok, version: obj.version };
     }
+    case "list_collections_result": {
+      if (!Array.isArray(obj.collections)) {
+        throw new Error("list_collections_result missing 'collections' array");
+      }
+      return { type: "list_collections_result", collections: obj.collections as string[] };
+    }
     case "error": {
       if (typeof obj.message !== "string") {
         throw new Error("error response missing 'message' field");
@@ -104,6 +120,7 @@ export interface RuntimeSaveMessage {
   url: string;
   title?: string;
   tags?: string[];
+  collection?: string;
   note?: string;
   selected_text?: string;
   action?: string;
@@ -113,7 +130,11 @@ export interface RuntimeStatusMessage {
   type: "status";
 }
 
-export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage;
+export interface RuntimeListCollectionsMessage {
+  type: "list_collections";
+}
+
+export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage;
 
 export interface RuntimeSuccessResponse {
   success: true;

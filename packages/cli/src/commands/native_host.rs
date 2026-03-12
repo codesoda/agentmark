@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::commands::save::{self, DedupResult, SaveRequest};
 use crate::config;
+use crate::db::BookmarkRepository;
 use crate::enrich::ProviderFactory;
 use crate::models::CaptureSource;
 use crate::native::messages::{IncomingMessage, OutgoingMessage};
@@ -102,10 +103,15 @@ fn dispatch(
             url,
             title,
             tags,
+            collection,
             note,
+            selected_text: _selected_text,
             action,
-            ..
-        } => handle_save(url, title, tags, note, action, home, provider_factory),
+        } => {
+            let req = build_save_request(url, title, tags, collection, note, action);
+            handle_save(req, home, provider_factory)
+        }
+        IncomingMessage::ListCollections => handle_list_collections(home),
     }
 }
 
@@ -116,26 +122,34 @@ fn status_response() -> OutgoingMessage {
     }
 }
 
-fn handle_save(
+/// Map incoming native save fields into a transport-neutral SaveRequest.
+/// `selected_text` is intentionally not persisted in this spec — it is
+/// carried through the wire boundary but not stored as a bookmark field.
+fn build_save_request(
     url: String,
     title: Option<String>,
     tags: Option<Vec<String>>,
+    collection: Option<String>,
     note: Option<String>,
     action: Option<String>,
-    home: &Path,
-    provider_factory: &ProviderFactory,
-) -> OutgoingMessage {
-    let req = SaveRequest {
+) -> SaveRequest {
+    SaveRequest {
         url,
         tags: tags.unwrap_or_default(),
-        collection: None,
+        collection,
         note,
         action,
         capture_source: CaptureSource::ChromeExtension,
         provided_title: title,
         no_enrich: false,
-    };
+    }
+}
 
+fn handle_save(
+    req: SaveRequest,
+    home: &Path,
+    provider_factory: &ProviderFactory,
+) -> OutgoingMessage {
     match save::execute_save_request(home, &req, provider_factory) {
         Ok(outcome) => {
             let status = match outcome.dedup {
@@ -150,6 +164,22 @@ fn handle_save(
             }
         }
         Err(e) => OutgoingMessage::error(e.to_string()),
+    }
+}
+
+fn handle_list_collections(home: &Path) -> OutgoingMessage {
+    let db_path = config::index_db_path(home);
+    let conn = match rusqlite::Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => return OutgoingMessage::error(format!("failed to open database: {e}")),
+    };
+    let repo = BookmarkRepository::new(&conn);
+    match repo.list_collections() {
+        Ok(pairs) => {
+            let names: Vec<String> = pairs.into_iter().map(|(name, _count)| name).collect();
+            OutgoingMessage::ListCollectionsResult { collections: names }
+        }
+        Err(e) => OutgoingMessage::error(format!("failed to list collections: {e}")),
     }
 }
 
@@ -430,6 +460,7 @@ mod tests {
                 url: "https://example.com".to_string(),
                 title: None,
                 tags: None,
+                collection: None,
                 note: None,
                 selected_text: None,
                 action: None,
@@ -443,5 +474,38 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dispatch_list_collections_with_no_db_returns_error() {
+        let home = std::path::PathBuf::from("/nonexistent");
+        let factory: &ProviderFactory = &|_, _| {
+            Err(crate::agent::AgentError::InvalidAgent {
+                value: "test".to_string(),
+            })
+        };
+        let response = dispatch(IncomingMessage::ListCollections, &home, &factory);
+        match response {
+            OutgoingMessage::Error { message } => {
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_collections_request_returns_error_and_loop_continues() {
+        let stdin = frame_messages(&[
+            json!({"type": "list_collections"}),
+            json!({"type": "status"}),
+        ]);
+        let (stdout, result) = run_host_status_only(&stdin);
+        assert!(result.is_ok());
+
+        let responses = decode_responses(&stdout);
+        assert_eq!(responses.len(), 2);
+        // list_collections fails because /nonexistent has no DB
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[1]["type"], "status_result");
     }
 }

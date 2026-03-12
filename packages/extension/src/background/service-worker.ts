@@ -40,7 +40,7 @@ function isSupportedUrl(url: string | undefined): url is string {
 
 // --- Save dispatch (shared by runtime messages and context menu) ---
 
-async function handleSaveRequest(request: NativeRequest): Promise<RuntimeResponse> {
+async function handleNativeRequest(request: NativeRequest): Promise<RuntimeResponse> {
   try {
     const client = getNativeClient();
     const response = await client.sendRequest(request);
@@ -72,17 +72,23 @@ function handleRuntimeMessage(
       url: message.url,
       title: message.title,
       tags: message.tags,
+      collection: message.collection,
       note: message.note,
       selected_text: message.selected_text,
       action: message.action,
     };
 
-    handleSaveRequest(nativeRequest).then(sendResponse);
+    handleNativeRequest(nativeRequest).then(sendResponse);
     return true; // Keep the message channel open for async response
   }
 
   if (message.type === "status") {
-    handleSaveRequest({ type: "status" }).then(sendResponse);
+    handleNativeRequest({ type: "status" }).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "list_collections") {
+    handleNativeRequest({ type: "list_collections" }).then(sendResponse);
     return true;
   }
 
@@ -130,7 +136,7 @@ function handleContextMenuClick(
     selected_text: info.selectionText,
   };
 
-  handleSaveRequest(nativeRequest).then((response) => {
+  handleNativeRequest(nativeRequest).then((response) => {
     if (response.success && response.data.type === "save_result") {
       showNotification(
         `agentmark-save-${Date.now()}`,
@@ -167,7 +173,7 @@ export {
   isSupportedUrl,
   handleRuntimeMessage,
   handleContextMenuClick,
-  handleSaveRequest,
+  handleNativeRequest,
   showNotification,
   CONTEXT_MENU_ID,
 };

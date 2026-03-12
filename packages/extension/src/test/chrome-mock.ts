@@ -75,6 +75,15 @@ export function resetChromeMock() {
         },
       ),
     },
+    storage: {
+      local: {
+        get: vi.fn(() => Promise.resolve({})),
+        set: vi.fn(() => Promise.resolve()),
+      },
+    },
+    scripting: {
+      executeScript: vi.fn(() => Promise.resolve([{ result: "" }])),
+    },
   };
 
   (globalThis as Record<string, unknown>).chrome = mock;

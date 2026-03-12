@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resetChromeMock } from "../test/chrome-mock";
-import { queryActiveTab, sendSaveMessage, isConnectionError, isSupportedUrl } from "./runtime";
+import {
+  queryActiveTab,
+  sendSaveMessage,
+  sendListCollectionsMessage,
+  isConnectionError,
+  isSupportedUrl,
+  loadLastUsedIntent,
+  saveLastUsedIntent,
+  querySelectedText,
+  normalizeTags,
+} from "./runtime";
 
 describe("isSupportedUrl", () => {
   it("accepts http URLs", () => {
@@ -41,9 +51,9 @@ describe("queryActiveTab", () => {
     resetChromeMock();
   });
 
-  it("returns active tab data", async () => {
+  it("returns active tab data with id", async () => {
     vi.mocked(chrome.tabs.query).mockResolvedValue([
-      { url: "https://example.com", title: "Example", favIconUrl: "https://example.com/favicon.ico" } as chrome.tabs.Tab,
+      { id: 42, url: "https://example.com", title: "Example", favIconUrl: "https://example.com/favicon.ico" } as chrome.tabs.Tab,
     ]);
 
     const tab = await queryActiveTab();
@@ -51,6 +61,7 @@ describe("queryActiveTab", () => {
       url: "https://example.com",
       title: "Example",
       favIconUrl: "https://example.com/favicon.ico",
+      id: 42,
     });
   });
 
@@ -88,7 +99,7 @@ describe("sendSaveMessage", () => {
     resetChromeMock();
   });
 
-  it("sends correct runtime message and returns response", async () => {
+  it("sends basic save message and returns response", async () => {
     const mockResponse = { success: true as const, data: { type: "save_result" as const, id: "abc123", path: "/tmp/abc", status: "created" } };
     vi.mocked(chrome.runtime.sendMessage).mockResolvedValue(mockResponse);
 
@@ -98,6 +109,30 @@ describe("sendSaveMessage", () => {
       { type: "save", url: "https://example.com", title: "Example" },
     );
     expect(result).toEqual(mockResponse);
+  });
+
+  it("sends save message with options", async () => {
+    const mockResponse = { success: true as const, data: { type: "save_result" as const, id: "abc123", path: "/tmp", status: "updated" } };
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue(mockResponse);
+
+    await sendSaveMessage("https://example.com", "Title", {
+      tags: ["rust"],
+      collection: "reading",
+      note: "my note",
+      action: "summarize",
+      selected_text: "excerpt",
+    });
+
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "save",
+      url: "https://example.com",
+      title: "Title",
+      tags: ["rust"],
+      collection: "reading",
+      note: "my note",
+      action: "summarize",
+      selected_text: "excerpt",
+    });
   });
 
   it("returns error when sendMessage rejects", async () => {
@@ -122,6 +157,63 @@ describe("sendSaveMessage", () => {
       success: false,
       error: "connection failed",
     });
+  });
+
+  it("returns error for null response", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue(null);
+
+    const result = await sendSaveMessage("https://example.com");
+    expect(result.success).toBe(false);
+  });
+
+  it("returns error for malformed response", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({ unexpected: true });
+
+    const result = await sendSaveMessage("https://example.com");
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("sendListCollectionsMessage", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("returns collection list on success", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: { type: "list_collections_result", collections: ["reading", "work"] },
+    });
+
+    const result = await sendListCollectionsMessage();
+    expect(result).toEqual(["reading", "work"]);
+  });
+
+  it("returns empty array on error response", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: false,
+      error: "not connected",
+    });
+
+    const result = await sendListCollectionsMessage();
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array on unexpected data type", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockResolvedValue({
+      success: true,
+      data: { type: "status_result", ok: true, version: "0.1.0" },
+    });
+
+    const result = await sendListCollectionsMessage();
+    expect(result).toEqual([]);
+  });
+
+  it("returns empty array when sendMessage throws", async () => {
+    vi.mocked(chrome.runtime.sendMessage).mockRejectedValue(new Error("disconnected"));
+
+    const result = await sendListCollectionsMessage();
+    expect(result).toEqual([]);
   });
 });
 
@@ -148,5 +240,151 @@ describe("isConnectionError", () => {
 
   it("returns false for generic errors", () => {
     expect(isConnectionError("Failed to save bookmark")).toBe(false);
+  });
+});
+
+describe("loadLastUsedIntent", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("returns stored tags and collection", async () => {
+    (chrome.storage.local.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      agentmark_last_intent: { tags: ["rust", "cli"], collection: "reading" },
+    });
+
+    const result = await loadLastUsedIntent();
+    expect(result.tags).toEqual(["rust", "cli"]);
+    expect(result.collection).toBe("reading");
+  });
+
+  it("returns defaults when key is missing", async () => {
+    (chrome.storage.local.get as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    const result = await loadLastUsedIntent();
+    expect(result.tags).toEqual([]);
+    expect(result.collection).toBeUndefined();
+  });
+
+  it("returns defaults for malformed stored data", async () => {
+    (chrome.storage.local.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      agentmark_last_intent: "not an object",
+    });
+
+    const result = await loadLastUsedIntent();
+    expect(result.tags).toEqual([]);
+  });
+
+  it("filters non-string tags", async () => {
+    (chrome.storage.local.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      agentmark_last_intent: { tags: ["valid", 42, null, "also-valid"] },
+    });
+
+    const result = await loadLastUsedIntent();
+    expect(result.tags).toEqual(["valid", "also-valid"]);
+  });
+
+  it("returns defaults when storage throws", async () => {
+    (chrome.storage.local.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("quota exceeded"));
+
+    const result = await loadLastUsedIntent();
+    expect(result.tags).toEqual([]);
+    expect(result.collection).toBeUndefined();
+  });
+});
+
+describe("saveLastUsedIntent", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("persists tags and collection to storage", async () => {
+    await saveLastUsedIntent({ tags: ["rust"], collection: "work" });
+
+    expect(chrome.storage.local.set).toHaveBeenCalledWith({
+      agentmark_last_intent: { tags: ["rust"], collection: "work" },
+    });
+  });
+
+  it("does not throw when storage write fails", async () => {
+    (chrome.storage.local.set as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("write failed"));
+
+    // Should not throw
+    await saveLastUsedIntent({ tags: [] });
+  });
+});
+
+describe("querySelectedText", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("returns selected text from tab", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: "selected content" },
+    ]);
+
+    const text = await querySelectedText(42);
+    expect(text).toBe("selected content");
+  });
+
+  it("returns empty string when no selection", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: "" },
+    ]);
+
+    const text = await querySelectedText(42);
+    expect(text).toBe("");
+  });
+
+  it("returns empty string when result is not a string", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: null },
+    ]);
+
+    const text = await querySelectedText(42);
+    expect(text).toBe("");
+  });
+
+  it("returns empty string when executeScript throws", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Cannot access chrome:// URLs"),
+    );
+
+    const text = await querySelectedText(42);
+    expect(text).toBe("");
+  });
+
+  it("returns empty string when results array is empty", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const text = await querySelectedText(42);
+    expect(text).toBe("");
+  });
+});
+
+describe("normalizeTags", () => {
+  it("splits on commas and trims", () => {
+    expect(normalizeTags("rust, cli, web")).toEqual(["rust", "cli", "web"]);
+  });
+
+  it("lowercases tags", () => {
+    expect(normalizeTags("Rust, CLI")).toEqual(["rust", "cli"]);
+  });
+
+  it("deduplicates preserving first-seen order", () => {
+    expect(normalizeTags("a, b, a, c")).toEqual(["a", "b", "c"]);
+  });
+
+  it("filters blank tags from repeated commas", () => {
+    expect(normalizeTags(",,,")).toEqual([]);
+  });
+
+  it("handles empty input", () => {
+    expect(normalizeTags("")).toEqual([]);
+  });
+
+  it("trims whitespace-only segments", () => {
+    expect(normalizeTags("  ,  tag  ,  ")).toEqual(["tag"]);
   });
 });

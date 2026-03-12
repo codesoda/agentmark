@@ -22,7 +22,7 @@ import {
   isSupportedUrl,
   handleRuntimeMessage,
   handleContextMenuClick,
-  handleSaveRequest,
+  handleNativeRequest,
   CONTEXT_MENU_ID,
 } from "./service-worker";
 import { getNativeClient } from "../shared/native-messaging";
@@ -180,7 +180,7 @@ describe("service-worker", () => {
       });
     });
 
-    it("passes through optional save fields", async () => {
+    it("passes through optional save fields including collection", async () => {
       const mockClient = getMockClient();
       mockClient.sendRequest.mockResolvedValue({ type: "save_result", id: "1", path: "/a", status: "created" });
 
@@ -191,6 +191,7 @@ describe("service-worker", () => {
           url: "https://example.com",
           title: "My Page",
           tags: ["test"],
+          collection: "reading",
           note: "a note",
           selected_text: "selected text",
           action: "read",
@@ -205,9 +206,37 @@ describe("service-worker", () => {
           url: "https://example.com",
           title: "My Page",
           tags: ["test"],
+          collection: "reading",
           note: "a note",
           selected_text: "selected text",
           action: "read",
+        });
+      });
+    });
+
+    it("forwards list_collections request to native host", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "list_collections_result",
+        collections: ["reading", "work"],
+      });
+
+      const sendResponse = vi.fn();
+      const result = handleRuntimeMessage(
+        { type: "list_collections" },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      expect(result).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(mockClient.sendRequest).toHaveBeenCalledWith({
+          type: "list_collections",
+        });
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: true,
+          data: { type: "list_collections_result", collections: ["reading", "work"] },
         });
       });
     });
@@ -319,7 +348,7 @@ describe("service-worker", () => {
 
       await vi.waitFor(() => {
         expect(chromeMock.notifications.create).toHaveBeenCalled();
-        const [id, opts] = chromeMock.notifications.create.mock.calls[0];
+        const [id, opts] = chromeMock.notifications.create.mock.calls[0] as [string, chrome.notifications.NotificationOptions];
         expect(id).toContain("agentmark-save-");
         expect(opts.type).toBe("basic");
         expect(opts.title).toBe("Saved to AgentMark");
@@ -338,7 +367,7 @@ describe("service-worker", () => {
 
       await vi.waitFor(() => {
         expect(chromeMock.notifications.create).toHaveBeenCalled();
-        const [id, opts] = chromeMock.notifications.create.mock.calls[0];
+        const [id, opts] = chromeMock.notifications.create.mock.calls[0] as [string, chrome.notifications.NotificationOptions];
         expect(id).toContain("agentmark-error-");
         expect(opts.type).toBe("basic");
         expect(opts.title).toBe("AgentMark Save Failed");
@@ -362,7 +391,7 @@ describe("service-worker", () => {
 
       await vi.waitFor(() => {
         expect(chromeMock.notifications.create).toHaveBeenCalled();
-        const [, opts] = chromeMock.notifications.create.mock.calls[0];
+        const [, opts] = chromeMock.notifications.create.mock.calls[0] as [string, chrome.notifications.NotificationOptions];
         expect(opts.message).toBe("https://example.com (created)");
       });
     });
@@ -377,7 +406,7 @@ describe("service-worker", () => {
     });
   });
 
-  describe("handleSaveRequest - error normalization", () => {
+  describe("handleNativeRequest - error normalization", () => {
     it("normalizes native ErrorResponse to runtime failure", async () => {
       const mockClient = getMockClient();
       mockClient.sendRequest.mockResolvedValue({
@@ -385,7 +414,7 @@ describe("service-worker", () => {
         message: "Failed to save: invalid URL",
       });
 
-      const result = await handleSaveRequest({ type: "save", url: "https://example.com" });
+      const result = await handleNativeRequest({ type: "save", url: "https://example.com" });
 
       expect(result).toEqual({
         success: false,
@@ -398,7 +427,7 @@ describe("service-worker", () => {
       const nativeResponse = { type: "save_result" as const, id: "abc", path: "/tmp", status: "created" };
       mockClient.sendRequest.mockResolvedValue(nativeResponse);
 
-      const result = await handleSaveRequest({ type: "save", url: "https://example.com" });
+      const result = await handleNativeRequest({ type: "save", url: "https://example.com" });
 
       expect(result).toEqual({
         success: true,
@@ -411,7 +440,7 @@ describe("service-worker", () => {
       const nativeResponse = { type: "status_result" as const, ok: true, version: "1.0.0" };
       mockClient.sendRequest.mockResolvedValue(nativeResponse);
 
-      const result = await handleSaveRequest({ type: "status" });
+      const result = await handleNativeRequest({ type: "status" });
 
       expect(result).toEqual({
         success: true,

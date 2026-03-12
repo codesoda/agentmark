@@ -18,7 +18,9 @@
     "contextMenus",
     "sidePanel",
     "nativeMessaging",
-    "notifications"
+    "notifications",
+    "storage",
+    "scripting"
   ],
   "commands": {
     "_execute_action": {

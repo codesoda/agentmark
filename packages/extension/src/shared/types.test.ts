@@ -79,6 +79,32 @@ describe("parseNativeResponse", () => {
     const result = parseNativeResponse(raw);
     expect(result).toEqual({ type: "save_result", id: "abc", path: "/tmp", status: "created" });
   });
+
+  // -- list_collections_result --
+
+  it("parses list_collections_result correctly", () => {
+    const raw = { type: "list_collections_result", collections: ["reading", "work"] };
+    const result = parseNativeResponse(raw);
+    expect(result).toEqual({ type: "list_collections_result", collections: ["reading", "work"] });
+  });
+
+  it("parses list_collections_result with empty array", () => {
+    const raw = { type: "list_collections_result", collections: [] };
+    const result = parseNativeResponse(raw);
+    expect(result).toEqual({ type: "list_collections_result", collections: [] });
+  });
+
+  it("rejects list_collections_result with missing collections", () => {
+    expect(() => parseNativeResponse({ type: "list_collections_result" })).toThrow(
+      "missing 'collections' array",
+    );
+  });
+
+  it("rejects list_collections_result with non-array collections", () => {
+    expect(() =>
+      parseNativeResponse({ type: "list_collections_result", collections: "not-array" }),
+    ).toThrow("missing 'collections' array");
+  });
 });
 
 describe("isErrorResponse", () => {
