@@ -291,6 +291,14 @@ fn tag_remove_requires_tags() {
     );
 }
 
+#[test]
+fn tag_rejects_mixed_add_and_remove() {
+    assert!(
+        Cli::try_parse_from(["agentmark", "tag", "abc123", "rust", "--remove", "old-tag"]).is_err(),
+        "tag with both positional tags and --remove should fail"
+    );
+}
+
 // ── Open command ────────────────────────────────────────────────────
 
 #[test]

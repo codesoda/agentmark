@@ -1,4 +1,5 @@
-//! Integration tests for `agentmark list`, `agentmark show`, and `agentmark search`.
+//! Integration tests for `agentmark list`, `agentmark show`, `agentmark search`,
+//! `agentmark tag`, `agentmark collections`, and `agentmark open`.
 //!
 //! Seeds DB rows and bundles directly through library APIs, then
 //! executes the CLI with `assert_cmd` against a temp HOME.
@@ -688,4 +689,379 @@ fn search_uses_list_format() {
     assert!(stdout.contains("processed"));
     assert!(stdout.contains("Quantum Tagged"));
     assert!(stdout.contains("[physics]"));
+}
+
+// ── Tag tests ───────────────────────────────────────────────────────
+
+/// Helper: read a bookmark row from the DB by ID.
+fn get_bookmark_from_db(env: &TestEnv, id: &str) -> Bookmark {
+    let conn = db::open_and_migrate(&env.db_path()).unwrap();
+    let repo = BookmarkRepository::new(&conn);
+    repo.get_by_id(id).unwrap().expect("bookmark should exist")
+}
+
+/// Helper: read the user_tags from bookmark.md front matter in a bundle.
+fn read_bundle_user_tags(env: &TestEnv, bookmark: &Bookmark) -> Vec<String> {
+    let bundle = Bundle::find(&env.storage, &bookmark.saved_at, &bookmark.id).unwrap();
+    let content = std::fs::read_to_string(bundle.path().join("bookmark.md")).unwrap();
+    // Parse YAML front matter
+    let yaml_start = content.find("---\n").unwrap() + 4;
+    let yaml_end = content[yaml_start..].find("\n---\n").unwrap() + yaml_start;
+    let yaml = &content[yaml_start..yaml_end + 1];
+    let parsed = Bookmark::from_yaml_str(yaml).unwrap();
+    parsed.user_tags
+}
+
+#[test]
+fn tag_adds_new_tags() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_TAG01", "https://a.com", "Tag Test", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG01", "rust", "cli"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("rust"));
+    assert!(stdout.contains("cli"));
+
+    // Verify DB state
+    let updated = get_bookmark_from_db(&env, "am_TAG01");
+    assert_eq!(updated.user_tags, vec!["rust", "cli"]);
+
+    // Verify bundle state
+    let bundle_tags = read_bundle_user_tags(&env, &updated);
+    assert_eq!(bundle_tags, vec!["rust", "cli"]);
+}
+
+#[test]
+fn tag_deduplicates_existing_tags() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_TAG02", "https://b.com", "Dedup Test", 2);
+    bm.user_tags = vec!["rust".to_string()];
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG02", "rust", "new-tag"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let updated = get_bookmark_from_db(&env, "am_TAG02");
+    assert_eq!(updated.user_tags, vec!["rust", "new-tag"]);
+}
+
+#[test]
+fn tag_deduplicates_repeated_input() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_TAG03", "https://c.com", "Repeat Input", 3);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG03", "rust", "rust", "cli"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let updated = get_bookmark_from_db(&env, "am_TAG03");
+    assert_eq!(updated.user_tags, vec!["rust", "cli"]);
+}
+
+#[test]
+fn tag_remove_removes_tags() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_TAG04", "https://d.com", "Remove Test", 4);
+    bm.user_tags = vec!["rust".to_string(), "cli".to_string(), "tools".to_string()];
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG04", "--remove", "cli"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let updated = get_bookmark_from_db(&env, "am_TAG04");
+    assert_eq!(updated.user_tags, vec!["rust", "tools"]);
+
+    let bundle_tags = read_bundle_user_tags(&env, &updated);
+    assert_eq!(bundle_tags, vec!["rust", "tools"]);
+}
+
+#[test]
+fn tag_remove_absent_is_idempotent() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_TAG05", "https://e.com", "Idempotent Remove", 5);
+    bm.user_tags = vec!["rust".to_string()];
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG05", "--remove", "nonexistent"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let updated = get_bookmark_from_db(&env, "am_TAG05");
+    assert_eq!(updated.user_tags, vec!["rust"]);
+}
+
+#[test]
+fn tag_remove_all_results_in_empty() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_TAG06", "https://f.com", "Remove All", 6);
+    bm.user_tags = vec!["rust".to_string(), "cli".to_string()];
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG06", "--remove", "rust", "cli"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("(none)"));
+
+    let updated = get_bookmark_from_db(&env, "am_TAG06");
+    assert!(updated.user_tags.is_empty());
+}
+
+#[test]
+fn tag_invalid_id_fails() {
+    let env = TestEnv::new();
+    // Seed DB so config exists
+    let bm = make_bookmark("am_TAG07", "https://g.com", "Exists", 7);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_NONEXISTENT", "rust"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("not found"));
+}
+
+#[test]
+fn tag_mixed_add_and_remove_rejected() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_TAGMIX", "https://g.com", "Mixed", 8);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAGMIX", "rust", "--remove", "old-tag"])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "tag with both positional tags and --remove should fail"
+    );
+}
+
+#[test]
+fn tag_without_config_fails_with_guidance() {
+    // Use a fresh temp dir with no config
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+
+    let output = Command::cargo_bin("agentmark")
+        .unwrap()
+        .env("HOME", &home)
+        .env("NO_COLOR", "1")
+        .args(["tag", "am_SOME", "rust"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+}
+
+#[test]
+fn tag_preserves_enriched_body() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_TAG08", "https://h.com", "Body Preserve", 8);
+    env.seed_bookmark(&bm, "", Some("Enriched summary content"));
+
+    let output = env
+        .cmd()
+        .args(["tag", "am_TAG08", "new-tag"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // Verify enriched summary is preserved
+    let updated = get_bookmark_from_db(&env, "am_TAG08");
+    let bundle = Bundle::find(&env.storage, &updated.saved_at, &updated.id).unwrap();
+    let sections = bundle.read_body_sections().unwrap();
+    assert_eq!(
+        sections.summary.as_deref(),
+        Some("Enriched summary content")
+    );
+}
+
+// ── Collections tests ───────────────────────────────────────────────
+
+#[test]
+fn collections_lists_with_counts() {
+    let env = TestEnv::new();
+    let mut bm1 = make_bookmark("am_COL01", "https://a.com", "Col A", 1);
+    bm1.collections = vec!["tech".to_string(), "rust".to_string()];
+    let mut bm2 = make_bookmark("am_COL02", "https://b.com", "Col B", 2);
+    bm2.collections = vec!["tech".to_string()];
+    let mut bm3 = make_bookmark("am_COL03", "https://c.com", "Col C", 3);
+    bm3.collections = vec!["rust".to_string(), "news".to_string()];
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+    env.seed_bookmark(&bm3, "", None);
+
+    let output = env.cmd().args(["collections"]).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Alphabetical order
+    assert!(stdout.contains("news  (1 bookmarks)"));
+    assert!(stdout.contains("rust  (2 bookmarks)"));
+    assert!(stdout.contains("tech  (2 bookmarks)"));
+}
+
+#[test]
+fn collections_empty_db() {
+    let env = TestEnv::new();
+    // Need to seed at least initialize the DB
+    let conn = db::open_and_migrate(&env.db_path()).unwrap();
+    drop(conn);
+
+    let output = env.cmd().args(["collections"]).output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("No collections found."));
+}
+
+#[test]
+fn collections_ignores_empty_collection_arrays() {
+    let env = TestEnv::new();
+    let bm1 = make_bookmark("am_COL04", "https://a.com", "No Coll", 1);
+    let mut bm2 = make_bookmark("am_COL05", "https://b.com", "Has Coll", 2);
+    bm2.collections = vec!["tech".to_string()];
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+
+    let output = env.cmd().args(["collections"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("tech  (1 bookmarks)"));
+    // Should only have one line of output
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 1);
+}
+
+#[test]
+fn collections_names_with_spaces() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_COL06", "https://a.com", "Space Coll", 1);
+    bm.collections = vec!["my projects".to_string()];
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env.cmd().args(["collections"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("my projects  (1 bookmarks)"));
+}
+
+// ── Open tests ──────────────────────────────────────────────────────
+
+#[test]
+fn open_valid_id_launches_opener() {
+    let env = TestEnv::new();
+    let bm = make_bookmark(
+        "am_OPEN01",
+        "https://example.com/article?q=1&r=2#frag",
+        "Open Test",
+        1,
+    );
+    env.seed_bookmark(&bm, "", None);
+
+    // Create a fake opener script that writes the URL to a file
+    let url_log = env.home.join("opened_url.txt");
+    let script_path = env.home.join("fake_opener.sh");
+    std::fs::write(
+        &script_path,
+        format!("#!/bin/sh\necho \"$1\" > {:?}\n", url_log),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let output = env
+        .cmd()
+        .env("AGENTMARK_OPENER", script_path.to_str().unwrap())
+        .args(["open", "am_OPEN01"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Opened"));
+    assert!(stdout.contains("example.com"));
+
+    // Verify the URL was passed correctly (including query/fragment)
+    let logged = std::fs::read_to_string(&url_log).unwrap();
+    assert_eq!(logged.trim(), "https://example.com/article?q=1&r=2#frag");
+}
+
+#[test]
+fn open_invalid_id_fails() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_OPEN02", "https://a.com", "Exists", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .env("AGENTMARK_OPENER", "true") // won't be reached
+        .args(["open", "am_NONEXISTENT"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("not found"));
+}
+
+#[test]
+fn open_launcher_failure_reports_error() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_OPEN03", "https://a.com", "Fail Open", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    // Use `false` as the opener — it always exits non-zero
+    let output = env
+        .cmd()
+        .env("AGENTMARK_OPENER", "false")
+        .args(["open", "am_OPEN03"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("failed to open"));
+}
+
+#[test]
+fn open_missing_opener_reports_error() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_OPEN04", "https://a.com", "Missing Opener", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .env("AGENTMARK_OPENER", "/nonexistent/opener/binary")
+        .args(["open", "am_OPEN04"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("failed to open"));
 }

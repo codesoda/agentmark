@@ -1,10 +1,13 @@
+pub mod collections;
 pub mod init;
 pub mod list;
+pub mod open;
 pub mod save;
 pub mod search;
 pub mod show;
+pub mod tag;
 
-use crate::cli::{Commands, OpenArgs, ReprocessArgs, TagArgs};
+use crate::cli::{Commands, ReprocessArgs};
 
 /// Execute the parsed CLI command.
 pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
@@ -14,18 +17,9 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::List(args) => list::run_list(args),
         Commands::Show(args) => show::run_show(args),
         Commands::Search(args) => search::run_search(args),
-        Commands::Tag(args) => {
-            dispatch_tag(args);
-            Ok(())
-        }
-        Commands::Collections => {
-            placeholder("collections");
-            Ok(())
-        }
-        Commands::Open(args) => {
-            dispatch_open(args);
-            Ok(())
-        }
+        Commands::Tag(args) => tag::run_tag(args),
+        Commands::Collections => collections::run_collections(),
+        Commands::Open(args) => open::run_open(args),
         Commands::Reprocess(args) => {
             dispatch_reprocess(args);
             Ok(())
@@ -39,16 +33,6 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
 
 fn placeholder(command: &str) {
     println!("agentmark {command}: not yet implemented");
-}
-
-fn dispatch_tag(args: TagArgs) {
-    let _ = (&args.id, &args.tags, &args.remove);
-    placeholder("tag");
-}
-
-fn dispatch_open(args: OpenArgs) {
-    let _ = &args.id;
-    placeholder("open");
 }
 
 fn dispatch_reprocess(args: ReprocessArgs) {

@@ -19,7 +19,7 @@
 - Fetch layer lives in `src/fetch/` (`mod.rs`, `metadata.rs`) — HTTP fetch + metadata extraction, depends only on reqwest/scraper/url
 - Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
 - DB layer accepts explicit paths/connections; `config.rs` remains the only HOME-aware module
-- Commands are in `src/commands/` module tree (`init.rs`, `save.rs`, `list.rs`, `show.rs`, `search.rs`)
+- Commands are in `src/commands/` module tree (`init.rs`, `save.rs`, `list.rs`, `show.rs`, `search.rs`, `tag.rs`, `collections.rs`, `open.rs`)
 - Command handlers return `Result<()>` — `main.rs` converts errors to stderr + non-zero exit
 - Save command (`commands/save.rs`) is the integration boundary for canonical → fetch → extract → bundle → DB; uses typed `SaveError`/`SaveOutcome`/`DedupResult` with two-stage canonical dedup (pre-fetch + post-fetch), three-way branching (new/unchanged/changed), merge semantics for user-owned fields, and partial-save semantics (bundle preserved if DB update fails)
 - Run checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test`
@@ -43,4 +43,5 @@
 
 - GitHub Actions workflow: `.github/workflows/ci.yml`
 - Two jobs: `rust` (fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint)
+- CI jobs run on `ubuntu-latest`, so macOS-specific CLI behaviors need an injectable or overrideable seam for tests instead of assuming local macOS binaries exist in CI
 - Extension job auto-skips if `packages/extension/package.json` does not exist

@@ -136,7 +136,7 @@ pub struct TagArgs {
     pub id: String,
 
     /// Tags to add
-    #[arg(required_unless_present = "remove")]
+    #[arg(required_unless_present = "remove", conflicts_with = "remove")]
     pub tags: Vec<String>,
 
     /// Tags to remove instead of add
