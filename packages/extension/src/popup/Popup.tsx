@@ -267,11 +267,11 @@ export default function Popup() {
             <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" data-testid="install-guidance">
               <p className="font-medium">Native host not connected</p>
               <p className="mt-1">
-                Install the AgentMark CLI and register the native messaging host:
+                Run the installer to set up the CLI and native messaging host:
               </p>
               <ol className="mt-1 list-inside list-decimal space-y-0.5">
-                <li>Install: <code>cargo install agentmark</code></li>
-                <li>Register: <code>agentmark install-host</code></li>
+                <li>Install: <code>curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash</code></li>
+                <li>Register host: <code>curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash -s -- --extension-id {chrome.runtime?.id ?? "YOUR_ID"} --skip-init --skip-extension</code></li>
                 <li>Reload this extension</li>
               </ol>
             </div>

@@ -56,7 +56,17 @@
 - `packages/skill/SKILL.md` — byte-for-byte mirror for agent loader compatibility (enforced by test)
 - `packages/skill/install-skill.sh` — installs canonical copy to `~/.agents/skills/agentmark/` and symlinks into detected agent roots (`~/.claude/skills/`, `~/.codex/skills/`)
 - Environment overrides for testing: `AGENTMARK_SHARED_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `CODEX_SKILLS_DIR`
-- Spec 25's root `install.sh` should delegate to `install-skill.sh` for skill placement rather than re-implementing agent detection
+## Installer
+
+- `install.sh` — Root installer script (POSIX shell). Supports both repo-local and bootstrap (`curl | bash`) execution
+- Builds CLI via `cargo build --release`, installs binary to `~/.agentmark/bin/agentmark`, symlinks to `~/.local/bin/agentmark`
+- Builds extension via `npm ci` + `npm run build`, copies to durable `~/.agentmark/extension/`
+- Registers Chrome native messaging host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.agentmark.native.json`
+- Delegates skill installation to `packages/skill/install-skill.sh` — do not duplicate agent-root detection
+- Flags: `--skip-init`, `--skip-extension`, `--extension-id ID`
+- Env overrides: `AGENTMARK_EXTENSION_ID`, `AGENTMARK_HOME`, `AGENTMARK_LOCAL_BIN`
+- Uses global variables for inter-function communication (not stdout capture) since display functions write to stdout
+- Tests in `packages/cli/tests/install_script_tests.rs` use temp repo fixtures with fake cargo/npm shims
 
 ## CI
 
