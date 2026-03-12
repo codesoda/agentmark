@@ -1,9 +1,10 @@
 pub mod init;
 pub mod list;
 pub mod save;
+pub mod search;
 pub mod show;
 
-use crate::cli::{Commands, OpenArgs, ReprocessArgs, SearchArgs, TagArgs};
+use crate::cli::{Commands, OpenArgs, ReprocessArgs, TagArgs};
 
 /// Execute the parsed CLI command.
 pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
@@ -12,10 +13,7 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Save(args) => save::run_save(args),
         Commands::List(args) => list::run_list(args),
         Commands::Show(args) => show::run_show(args),
-        Commands::Search(args) => {
-            dispatch_search(args);
-            Ok(())
-        }
+        Commands::Search(args) => search::run_search(args),
         Commands::Tag(args) => {
             dispatch_tag(args);
             Ok(())
@@ -41,11 +39,6 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
 
 fn placeholder(command: &str) {
     println!("agentmark {command}: not yet implemented");
-}
-
-fn dispatch_search(args: SearchArgs) {
-    let _ = (&args.query, &args.collection, args.limit);
-    placeholder("search");
 }
 
 fn dispatch_tag(args: TagArgs) {

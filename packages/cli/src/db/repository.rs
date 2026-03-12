@@ -337,7 +337,7 @@ impl<'a> BookmarkRepository<'a> {
         let mut param_idx = 1;
 
         if let Some(c) = collection {
-            sql.push_str(&format!(" AND collections LIKE ?{param_idx}"));
+            sql.push_str(&format!(" AND collections LIKE ?{param_idx} ESCAPE '\\'"));
             param_values.push(Box::new(format!("%\"{}\"%%", escape_like(c))));
             param_idx += 1;
         }
@@ -345,7 +345,7 @@ impl<'a> BookmarkRepository<'a> {
         if let Some(t) = tag {
             let like_pat = format!("%\"{}\"%%", escape_like(t));
             sql.push_str(&format!(
-                " AND (user_tags LIKE ?{pi} OR suggested_tags LIKE ?{pi})",
+                " AND (user_tags LIKE ?{pi} ESCAPE '\\' OR suggested_tags LIKE ?{pi} ESCAPE '\\')",
                 pi = param_idx
             ));
             param_values.push(Box::new(like_pat));
@@ -412,12 +412,16 @@ impl<'a> BookmarkRepository<'a> {
         let mut param_idx = 2;
 
         if let Some(c) = collection {
-            sql.push_str(&format!(" AND bookmarks.collections LIKE ?{param_idx}"));
+            sql.push_str(&format!(
+                " AND bookmarks.collections LIKE ?{param_idx} ESCAPE '\\'"
+            ));
             param_values.push(Box::new(format!("%\"{}\"%%", escape_like(c))));
             param_idx += 1;
         }
 
-        sql.push_str(&format!(" ORDER BY bm25(bookmarks_fts) LIMIT ?{param_idx}"));
+        sql.push_str(&format!(
+            " ORDER BY bm25(bookmarks_fts), bookmarks.saved_at DESC, bookmarks.id DESC LIMIT ?{param_idx}"
+        ));
         param_values.push(Box::new(limit as i64));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -515,7 +519,9 @@ impl<'a> BookmarkRepository<'a> {
 
 /// Escape `%` and `_` in a string for use in SQL `LIKE` patterns.
 fn escape_like(s: &str) -> String {
-    s.replace('%', "%%").replace('_', "__")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]

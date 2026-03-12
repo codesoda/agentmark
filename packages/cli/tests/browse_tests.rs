@@ -1,4 +1,4 @@
-//! Integration tests for `agentmark list` and `agentmark show`.
+//! Integration tests for `agentmark list`, `agentmark show`, and `agentmark search`.
 //!
 //! Seeds DB rows and bundles directly through library APIs, then
 //! executes the CLI with `assert_cmd` against a temp HOME.
@@ -386,4 +386,306 @@ fn show_missing_bundle_fails_with_drift_error() {
         stderr.contains("drift") || stderr.contains("not found"),
         "should mention drift or not found: {stderr}"
     );
+}
+
+// ── Search tests ─────────────────────────────────────────────────────
+
+#[test]
+fn search_finds_by_title() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_01AAA", "https://a.com", "Quantum Computing Basics", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env.cmd().args(["search", "quantum"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("Quantum Computing Basics"));
+}
+
+#[test]
+fn search_finds_by_note() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_01AAA", "https://a.com", "Generic Title", 1);
+    bm.note = Some("fascinating deep learning research".to_string());
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env.cmd().args(["search", "fascinating"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("Generic Title"));
+}
+
+#[test]
+fn search_finds_by_user_tag() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_01AAA", "https://a.com", "Some Article", 1);
+    bm.user_tags = vec!["rustlang".to_string()];
+    let bm2 = make_bookmark("am_02BBB", "https://b.com", "Other Article", 2);
+    env.seed_bookmark(&bm, "", None);
+    env.seed_bookmark(&bm2, "", None);
+
+    let output = env.cmd().args(["search", "rustlang"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Some Article"));
+    assert!(!stdout.contains("Other Article"));
+}
+
+#[test]
+fn search_finds_by_suggested_tag() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_01AAA", "https://a.com", "Tagged Article", 1);
+    bm.suggested_tags = vec!["machinelearning".to_string()];
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "machinelearning"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Tagged Article"));
+}
+
+#[test]
+fn search_scopes_by_collection() {
+    let env = TestEnv::new();
+    let mut bm1 = make_bookmark("am_01AAA", "https://a.com", "Quantum In Dev", 1);
+    bm1.collections = vec!["dev".to_string()];
+    let mut bm2 = make_bookmark("am_02BBB", "https://b.com", "Quantum In Research", 2);
+    bm2.collections = vec!["research".to_string()];
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "quantum", "--collection", "dev"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Quantum In Dev"));
+    assert!(!stdout.contains("Quantum In Research"));
+}
+
+#[test]
+fn search_respects_limit() {
+    let env = TestEnv::new();
+    for i in 0..5 {
+        let bm = make_bookmark(
+            &format!("am_0{i}XXX"),
+            &format!("https://{i}.com"),
+            &format!("Quantum Article {i}"),
+            i + 1,
+        );
+        env.seed_bookmark(&bm, "", None);
+    }
+
+    let output = env
+        .cmd()
+        .args(["search", "quantum", "--limit", "2"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn search_no_results_message() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_01AAA", "https://a.com", "Unrelated Article", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "nonexistentkeyword"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("No results found"));
+}
+
+#[test]
+fn search_empty_db_no_results() {
+    let env = TestEnv::new();
+    // Ensure DB exists
+    let conn = db::open_and_migrate(&env.db_path()).unwrap();
+    drop(conn);
+
+    let output = env.cmd().args(["search", "anything"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("No results found"));
+}
+
+#[test]
+fn search_limit_zero_no_results() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_01AAA", "https://a.com", "Quantum Article", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "quantum", "--limit", "0"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("No results found"));
+}
+
+#[test]
+fn search_whitespace_query_no_results() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_01AAA", "https://a.com", "Quantum Article", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env.cmd().args(["search", "   "]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success());
+    assert!(stdout.contains("No results found"));
+}
+
+#[test]
+fn search_quoted_phrase() {
+    let env = TestEnv::new();
+    let bm1 = make_bookmark("am_01AAA", "https://a.com", "Deep Learning Fundamentals", 1);
+    let bm2 = make_bookmark(
+        "am_02BBB",
+        "https://b.com",
+        "Deep Sea Fishing and Learning",
+        2,
+    );
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "\"deep learning\""])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Deep Learning Fundamentals"));
+    // The phrase "deep learning" doesn't appear adjacent in bm2's title
+    assert!(!stdout.contains("Deep Sea Fishing"));
+}
+
+#[test]
+fn search_boolean_and() {
+    let env = TestEnv::new();
+    let bm1 = make_bookmark("am_01AAA", "https://a.com", "Rust Programming Guide", 1);
+    let bm2 = make_bookmark("am_02BBB", "https://b.com", "Python Programming Guide", 2);
+    let bm3 = make_bookmark("am_03CCC", "https://c.com", "Rust Cooking Recipes", 3);
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+    env.seed_bookmark(&bm3, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "rust AND programming"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Rust Programming Guide"));
+    assert!(!stdout.contains("Python Programming"));
+    assert!(!stdout.contains("Rust Cooking"));
+}
+
+#[test]
+fn search_relevance_ordering() {
+    let env = TestEnv::new();
+    // bm1: "quantum" in title only — strong match
+    let bm1 = make_bookmark(
+        "am_01AAA",
+        "https://a.com",
+        "Quantum Computing Revolution",
+        1,
+    );
+    // bm2: "quantum" in note only — weaker match
+    let mut bm2 = make_bookmark("am_02BBB", "https://b.com", "Generic Tech Article", 2);
+    bm2.note = Some("mentions quantum briefly".to_string());
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+
+    let output = env.cmd().args(["search", "quantum"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let pos_strong = stdout
+        .find("Quantum Computing Revolution")
+        .expect("should find strong match");
+    let pos_weak = stdout
+        .find("Generic Tech Article")
+        .expect("should find weak match");
+    assert!(
+        pos_strong < pos_weak,
+        "Title match should rank above note-only match"
+    );
+}
+
+#[test]
+fn search_malformed_fts_fails() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_01AAA", "https://a.com", "Article", 1);
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env.cmd().args(["search", "AND OR NOT"]).output().unwrap();
+    assert!(!output.status.success(), "Malformed FTS syntax should fail");
+}
+
+#[test]
+fn search_without_config_fails_with_guidance() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // No .agentmark dir or config
+
+    let output = Command::cargo_bin("agentmark")
+        .unwrap()
+        .env("HOME", &home)
+        .env("NO_COLOR", "1")
+        .args(["search", "anything"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("init") || stderr.contains("config"),
+        "Should mention init or config: {stderr}"
+    );
+}
+
+#[test]
+fn search_collection_with_wildcard_chars() {
+    let env = TestEnv::new();
+    let mut bm1 = make_bookmark("am_01AAA", "https://a.com", "Quantum Special", 1);
+    bm1.collections = vec!["my_collection%".to_string()];
+    let mut bm2 = make_bookmark("am_02BBB", "https://b.com", "Quantum Normal", 2);
+    bm2.collections = vec!["other".to_string()];
+    env.seed_bookmark(&bm1, "", None);
+    env.seed_bookmark(&bm2, "", None);
+
+    let output = env
+        .cmd()
+        .args(["search", "quantum", "--collection", "my_collection%"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Quantum Special"));
+    assert!(!stdout.contains("Quantum Normal"));
+}
+
+#[test]
+fn search_uses_list_format() {
+    let env = TestEnv::new();
+    let mut bm = make_bookmark("am_01AAA", "https://a.com", "Quantum Tagged", 1);
+    bm.user_tags = vec!["physics".to_string()];
+    bm.state = BookmarkState::Processed;
+    env.seed_bookmark(&bm, "", None);
+
+    let output = env.cmd().args(["search", "quantum"]).output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Should contain same fields as list output: date, state, title, tags
+    assert!(stdout.contains("2026-03-01"));
+    assert!(stdout.contains("processed"));
+    assert!(stdout.contains("Quantum Tagged"));
+    assert!(stdout.contains("[physics]"));
 }
