@@ -4,6 +4,7 @@
 
 - `packages/cli/` — Rust CLI (`agentmark` binary), built with `cargo build`
 - `packages/extension/` — Chrome MV3 extension (React + Vite + Tailwind + TypeScript)
+- `packages/skill/` — Cross-agent skill definition and installer
 
 ## Rust CLI
 
@@ -48,6 +49,14 @@
 - Native detail requests use a `BookmarkDetail` DTO (DB + bundle summary, no article body) — keep detail payloads bounded
 - Shared form controls (`src/shared/TagInput.tsx`, `src/shared/CollectionSelect.tsx`) are used by both popup and sidepanel — popup re-exports from shared. Do not copy form controls into sidepanel or popup; edit the shared originals
 - Test setup (`src/test/chrome-mock.ts`) provides lightweight Chrome API mocks for vitest — use `resetChromeMock()` in `beforeEach` and `createMockPort()` for port lifecycle tests
+
+## Cross-Agent Skill
+
+- `packages/skill/agentmark.md` — skill prompt (spec-facing source of truth)
+- `packages/skill/SKILL.md` — byte-for-byte mirror for agent loader compatibility (enforced by test)
+- `packages/skill/install-skill.sh` — installs canonical copy to `~/.agents/skills/agentmark/` and symlinks into detected agent roots (`~/.claude/skills/`, `~/.codex/skills/`)
+- Environment overrides for testing: `AGENTMARK_SHARED_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `CODEX_SKILLS_DIR`
+- Spec 25's root `install.sh` should delegate to `install-skill.sh` for skill placement rather than re-implementing agent detection
 
 ## CI
 
