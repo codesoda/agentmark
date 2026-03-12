@@ -10,3 +10,4 @@ pub(crate) mod enrich;
 pub mod extract;
 pub mod fetch;
 pub mod models;
+pub mod native;
