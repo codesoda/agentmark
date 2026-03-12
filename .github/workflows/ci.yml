@@ -73,3 +73,8 @@ jobs:
         if: steps.check.outputs.exists == 'true'
         run: npm run lint
         working-directory: packages/extension
+
+      - name: Test
+        if: steps.check.outputs.exists == 'true'
+        run: npm run test
+        working-directory: packages/extension

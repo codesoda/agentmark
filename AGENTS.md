@@ -33,15 +33,19 @@
   - `npm run typecheck` — TypeScript strict checking via `tsc --noEmit`
   - `npm run build` — Vite multi-entry build producing `dist/`
   - `npm run lint` — ESLint with flat config
+  - `npm run test` — Vitest unit tests (Node environment with Chrome API mocks)
 - `manifest.json` is static (root of `packages/extension/`), copied into `dist/` by `vite-plugin-static-copy`
 - Build outputs three entries: popup HTML, sidepanel HTML, background service worker (`background.js`)
 - Internal seams: `src/background/`, `src/popup/`, `src/sidepanel/`, `src/shared/`
 - Shared constants and types live in `src/shared/` — popup and sidepanel import from shared, never from each other
-- Background service worker is the sole bridge to native messaging (Specs 17-19)
+- Background service worker (`src/background/service-worker.ts`) is the sole bridge to native messaging — thin MV3 wiring that delegates to `src/shared/native-messaging.ts` for port lifecycle
+- Native messaging client (`src/shared/native-messaging.ts`) owns `connectNative()`, FIFO response matching, reconnect policy, and connection status — no other module should touch the native port directly
+- Wire-contract types (`src/shared/types.ts`) mirror the Rust `native::messages` schema exactly (snake_case fields, same discriminator tags) — do not introduce camelCase alternatives
+- Test setup (`src/test/chrome-mock.ts`) provides lightweight Chrome API mocks for vitest — use `resetChromeMock()` in `beforeEach` and `createMockPort()` for port lifecycle tests
 
 ## CI
 
 - GitHub Actions workflow: `.github/workflows/ci.yml`
-- Two jobs: `rust` (fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint)
+- Two jobs: `rust` (fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint, test)
 - CI jobs run on `ubuntu-latest`, so macOS-specific CLI behaviors need an injectable or overrideable seam for tests instead of assuming local macOS binaries exist in CI
 - Extension job auto-skips if `packages/extension/package.json` does not exist
