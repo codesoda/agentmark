@@ -8,7 +8,8 @@
 ## Rust CLI
 
 - Workspace root `Cargo.toml` with single member `packages/cli`
-- Lib/bin split: `src/lib.rs` exposes `bundle`, `canonical`, `cli`, `commands`, `config`, `db`, `extract`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
+- Lib/bin split: `src/lib.rs` exposes `agent`, `bundle`, `canonical`, `cli`, `commands`, `config`, `db`, `extract`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
+- Agent layer lives in `src/agent/` (`mod.rs`, `provider.rs`, `prompt.rs`, `claude.rs`, `codex.rs`) — LLM provider abstraction for enrichment via local CLI subprocesses. Uses an injected `ProcessRunner` trait for testable subprocess invocation. Providers are selected by `create_provider()` factory based on `config.default_agent`. Tests use mock runners rather than real CLIs or PATH mutation
 - Canonical layer lives in `src/canonical.rs` — pure URL normalization (strip tracking params, normalize host/scheme/slashes, sort query params), depends only on `url` crate
 - Domain model types live in `src/models/` (`bookmark.rs`, `event.rs`) — pure data + serde, no I/O or config coupling
 - Database layer lives in `src/db/` (`mod.rs`, `schema.rs`, `repository.rs`) — SQLite + FTS5 index, depends on `models` only
