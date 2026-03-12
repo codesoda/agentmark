@@ -203,7 +203,7 @@ impl Bundle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extract::ExtractionResult;
+
     use crate::models::{BookmarkEvent, EventType};
     use chrono::{TimeZone, Utc};
     use serde_json::json;

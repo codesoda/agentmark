@@ -484,6 +484,32 @@ impl<'a> BookmarkRepository<'a> {
         )?;
         Ok(updated > 0)
     }
+
+    /// Update bookmark enrichment fields and DB-internal summary in a single write.
+    ///
+    /// This avoids double FTS trigger churn from separate `update()` + `set_summary()` calls.
+    /// Updates: suggested_tags, collections, summary_status, and summary.
+    pub fn update_enrichment(
+        &self,
+        id: &str,
+        bookmark: &Bookmark,
+        summary: &str,
+    ) -> Result<bool, DbError> {
+        let sql = "UPDATE bookmarks SET \
+            suggested_tags=?2, collections=?3, summary_status=?4, summary=?5 \
+            WHERE id=?1";
+        let updated = self.conn.execute(
+            sql,
+            params![
+                id,
+                vec_to_json(&bookmark.suggested_tags),
+                vec_to_json(&bookmark.collections),
+                summary_status_to_text(&bookmark.summary_status),
+                summary,
+            ],
+        )?;
+        Ok(updated > 0)
+    }
 }
 
 /// Escape `%` and `_` in a string for use in SQL `LIKE` patterns.
@@ -942,6 +968,44 @@ mod tests {
         let results = repo.search("microservices", 10, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, bm.id);
+    }
+
+    // ── Enrichment update ────────────────────────────────────────────
+
+    #[test]
+    fn update_enrichment_persists_fields_and_summary() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+
+        let mut bm = sample_bookmark("https://example.com", "Enrichment Test");
+        repo.insert(&bm).unwrap();
+
+        bm.suggested_tags = vec!["ai".to_string(), "ml".to_string()];
+        bm.collections = vec!["tech".to_string()];
+        bm.summary_status = SummaryStatus::Done;
+
+        let updated = repo
+            .update_enrichment(&bm.id, &bm, "An article about machine learning")
+            .unwrap();
+        assert!(updated);
+
+        let loaded = repo.get_by_id(&bm.id).unwrap().unwrap();
+        assert_eq!(loaded.suggested_tags, vec!["ai", "ml"]);
+        assert_eq!(loaded.collections, vec!["tech"]);
+        assert_eq!(loaded.summary_status, SummaryStatus::Done);
+
+        // Summary should be searchable via FTS
+        let results = repo.search("machine learning", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, bm.id);
+    }
+
+    #[test]
+    fn update_enrichment_missing_id_returns_false() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm = sample_bookmark("https://example.com", "Ghost");
+        assert!(!repo.update_enrichment(&bm.id, &bm, "summary").unwrap());
     }
 
     // ── Search relevance ordering ───────────────────────────────────

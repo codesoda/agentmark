@@ -4,15 +4,19 @@
 //! - New save: create bundle + insert DB row
 //! - Duplicate with unchanged content: merge user fields + update bundle/DB + append `resaved`
 //! - Duplicate with changed content: update bundle files + update DB + append `content_updated`
+//!
+//! After durable save, runs best-effort enrichment via the configured agent provider.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::bundle::Bundle;
+use crate::agent;
+use crate::bundle::{BodySections, Bundle};
 use crate::canonical;
 use crate::cli::SaveArgs;
 use crate::config::{self, Config, ConfigError};
 use crate::db::{self, BookmarkRepository, DbError};
+use crate::enrich::{self, EnrichOutcome, ProviderFactory};
 use crate::extract::{self, ExtractionResult};
 use crate::fetch::{self, FetchError, PageMetadata};
 use crate::models::{
@@ -300,11 +304,51 @@ fn best_canonical_url(pre_fetch_canonical: &str, page_metadata: &PageMetadata) -
     pre_fetch_canonical.to_string()
 }
 
+// ── Post-save context (internal) ────────────────────────────────────
+
+/// Internal richer context returned by save branch handlers for enrichment.
+struct PostSaveContext {
+    bookmark: Bookmark,
+    bundle: Bundle,
+    article_markdown: String,
+    warnings: Vec<String>,
+    dedup: DedupResult,
+}
+
+impl PostSaveContext {
+    fn into_outcome(self) -> SaveOutcome {
+        SaveOutcome {
+            id: self.bookmark.id.clone(),
+            bundle_path: self.bundle.path().to_path_buf(),
+            warnings: self.warnings,
+            dedup: self.dedup,
+        }
+    }
+}
+
+// ── Default provider factory ─────────────────────────────────────────
+
+fn default_provider_factory(
+    default_agent: &str,
+    system_prompt: Option<&str>,
+) -> Result<Box<dyn crate::agent::AgentProvider>, crate::agent::AgentError> {
+    agent::create_provider(default_agent, system_prompt)
+}
+
 // ── Testable save pipeline ──────────────────────────────────────────
 
 /// Execute the save pipeline with an explicit home directory.
 /// This is the main testable seam.
 pub fn execute_save(home: &Path, args: &SaveArgs) -> Result<SaveOutcome, SaveError> {
+    execute_save_with_deps(home, args, &default_provider_factory)
+}
+
+/// Internal save pipeline with injectable provider factory for testing.
+pub(crate) fn execute_save_with_deps(
+    home: &Path,
+    args: &SaveArgs,
+    provider_factory: &ProviderFactory,
+) -> Result<SaveOutcome, SaveError> {
     // 1. Load config
     let config = Config::load(home)?;
 
@@ -344,8 +388,8 @@ pub fn execute_save(home: &Path, args: &SaveArgs) -> Result<SaveOutcome, SaveErr
         None
     };
 
-    // 9. Branch: new save vs duplicate
-    match existing {
+    // 9. Branch: new save vs duplicate → get post-save context
+    let mut ctx = match existing {
         Some(existing_bm) => handle_duplicate(
             &config,
             &repo,
@@ -354,7 +398,7 @@ pub fn execute_save(home: &Path, args: &SaveArgs) -> Result<SaveOutcome, SaveErr
             &inputs,
             &final_canonical,
             warnings,
-        ),
+        )?,
         None => handle_new_save(
             &config,
             &repo,
@@ -363,8 +407,31 @@ pub fn execute_save(home: &Path, args: &SaveArgs) -> Result<SaveOutcome, SaveErr
             &page,
             &inputs,
             warnings,
-        ),
+        )?,
+    };
+
+    // 10. Run enrichment (best-effort, after durable save)
+    let enrich_eligible = !args.no_enrich && ctx.dedup != DedupResult::Unchanged;
+
+    if enrich_eligible {
+        let outcome = enrich::enrich_bookmark(
+            &mut ctx.bookmark,
+            &ctx.article_markdown,
+            &ctx.bundle,
+            &repo,
+            &config,
+            provider_factory,
+        );
+        match outcome {
+            EnrichOutcome::Success => {}
+            EnrichOutcome::Skipped { .. } => {}
+            EnrichOutcome::Failed { warning } => {
+                ctx.warnings.push(warning);
+            }
+        }
     }
+
+    Ok(ctx.into_outcome())
 }
 
 // ── New save path ───────────────────────────────────────────────────
@@ -377,7 +444,7 @@ fn handle_new_save(
     page: &FetchedPage,
     inputs: &NormalizedInputs,
     warnings: Vec<String>,
-) -> Result<SaveOutcome, SaveError> {
+) -> Result<PostSaveContext, SaveError> {
     let bookmark = build_bookmark(url, canonical_url, page, inputs);
 
     let capture_source_str = match bookmark.capture_source {
@@ -404,9 +471,10 @@ fn handle_new_save(
         });
     }
 
-    Ok(SaveOutcome {
-        id,
-        bundle_path,
+    Ok(PostSaveContext {
+        bookmark,
+        bundle,
+        article_markdown: page.extraction.article_markdown.clone(),
         warnings,
         dedup: DedupResult::New,
     })
@@ -422,15 +490,13 @@ fn handle_duplicate(
     inputs: &NormalizedInputs,
     canonical_url: &str,
     warnings: Vec<String>,
-) -> Result<SaveOutcome, SaveError> {
+) -> Result<PostSaveContext, SaveError> {
     let old_hash = existing.content_hash.clone();
     let new_hash = &page.extraction.content_hash;
     let content_changed = old_hash.as_deref() != Some(new_hash);
 
     // Find existing bundle on disk
     let bundle = Bundle::find(&config.storage_path, &existing.saved_at, &existing.id)?;
-    let bundle_path = bundle.path().to_path_buf();
-    let id = existing.id.clone();
 
     if content_changed {
         // Content changed: update bundle files, metadata, and reset enrichment
@@ -444,6 +510,10 @@ fn handle_duplicate(
             &old_hash,
             warnings,
         )
+        .map(|mut ctx| {
+            ctx.bundle = bundle;
+            ctx
+        })
     } else {
         // Content unchanged: merge user fields only
         handle_unchanged(
@@ -454,12 +524,11 @@ fn handle_duplicate(
             &bundle,
             warnings,
         )
+        .map(|mut ctx| {
+            ctx.bundle = bundle;
+            ctx
+        })
     }
-    .map(|mut outcome| {
-        outcome.id = id;
-        outcome.bundle_path = bundle_path;
-        outcome
-    })
 }
 
 fn handle_unchanged(
@@ -469,7 +538,7 @@ fn handle_unchanged(
     canonical_url: &str,
     bundle: &Bundle,
     warnings: Vec<String>,
-) -> Result<SaveOutcome, SaveError> {
+) -> Result<PostSaveContext, SaveError> {
     // Merge user-owned fields
     existing.user_tags = merge_tags(&existing.user_tags, &inputs.tags);
     let new_collections: Vec<String> = inputs.collection.iter().cloned().collect();
@@ -512,9 +581,10 @@ fn handle_unchanged(
         Ok(true) => {}
     }
 
-    Ok(SaveOutcome {
-        id: existing.id.clone(),
-        bundle_path: bundle.path().to_path_buf(),
+    Ok(PostSaveContext {
+        bookmark: existing.clone(),
+        bundle: Bundle::open(bundle.path().to_path_buf())?,
+        article_markdown: String::new(), // not needed for unchanged
         warnings,
         dedup: DedupResult::Unchanged,
     })
@@ -530,7 +600,7 @@ fn handle_content_changed(
     bundle: &Bundle,
     old_hash: &Option<String>,
     warnings: Vec<String>,
-) -> Result<SaveOutcome, SaveError> {
+) -> Result<PostSaveContext, SaveError> {
     // Update metadata from fresh fetch
     if let Some(ref title) = page.metadata.title {
         existing.title = title.clone();
@@ -560,7 +630,12 @@ fn handle_content_changed(
     bundle.update_article_md(&page.extraction.article_markdown)?;
     bundle.update_metadata_json(&page.metadata)?;
     bundle.update_source_html(&page.raw_html)?;
-    bundle.update_bookmark_md_preserving_body(existing)?;
+
+    // Clear stale enrichment body sections when content changes.
+    // Use fresh BodySections::default() instead of preserving old body,
+    // so stale summaries don't survive if re-enrichment fails or is skipped.
+    let sections = BodySections::default();
+    bundle.update_bookmark_md(existing, &sections)?;
 
     // Append content_updated event with old/new hashes
     let event = BookmarkEvent::new(
@@ -594,9 +669,13 @@ fn handle_content_changed(
         Ok(true) => {}
     }
 
-    Ok(SaveOutcome {
-        id: existing.id.clone(),
-        bundle_path: bundle.path().to_path_buf(),
+    // Clear DB summary when content changes (stale summary must not survive)
+    let _ = repo.set_summary(&existing.id, "");
+
+    Ok(PostSaveContext {
+        bookmark: existing.clone(),
+        bundle: Bundle::open(bundle.path().to_path_buf())?,
+        article_markdown: page.extraction.article_markdown.clone(),
         warnings,
         dedup: DedupResult::ContentChanged,
     })

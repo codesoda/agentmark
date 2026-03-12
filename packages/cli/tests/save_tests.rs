@@ -22,7 +22,7 @@ fn setup_home(tmp: &TempDir, storage_path: &Path) -> std::path::PathBuf {
 storage_path = "{}"
 
 [enrichment]
-enabled = true
+enabled = false
 "#,
         storage_path.display()
     );
@@ -863,6 +863,73 @@ fn resave_fails_with_partial_save_when_db_row_disappears() {
     assert!(original_id.starts_with("am_"));
     assert!(bundle_dirs[0].join("bookmark.md").is_file());
     assert!(bundle_dirs[0].join("article.md").is_file());
+}
+
+// ── Enrichment skip tests ─────────────────────────────────────────────
+
+#[test]
+fn save_with_no_enrich_skips_enrichment() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/article")
+        .with_status(200)
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/article", server.url());
+    agentmark_cmd(&home)
+        .args(["save", &url, "--no-enrich"])
+        .assert()
+        .success();
+
+    // summary_status should be pending (no enrichment attempted)
+    let db_path = home.join(".agentmark/index.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let summary_status: String = conn
+        .query_row("SELECT summary_status FROM bookmarks LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(summary_status, "pending");
+
+    // events.jsonl should have only the saved event (no enrichment event)
+    let bundle_dirs = find_bundle_dirs(&storage);
+    let events_content = std::fs::read_to_string(bundle_dirs[0].join("events.jsonl")).unwrap();
+    let lines: Vec<&str> = events_content.lines().collect();
+    assert_eq!(lines.len(), 1, "should only have saved event");
+    assert!(lines[0].contains("\"saved\""));
+}
+
+#[test]
+fn save_with_enrichment_disabled_in_config_skips_enrichment() {
+    // The setup_home helper already sets enrichment.enabled = false,
+    // so a normal save without --no-enrich should still skip enrichment.
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/article")
+        .with_status(200)
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/article", server.url());
+    agentmark_cmd(&home).args(["save", &url]).assert().success();
+
+    let db_path = home.join(".agentmark/index.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let summary_status: String = conn
+        .query_row("SELECT summary_status FROM bookmarks LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(summary_status, "pending");
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
