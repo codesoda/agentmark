@@ -48,6 +48,7 @@ export function resetChromeMock() {
   const mock = {
     runtime: {
       connectNative: vi.fn(),
+      sendMessage: vi.fn(),
       onMessage: createEventTarget(),
       onInstalled: createEventTarget(),
       onStartup: createEventTarget(),
@@ -62,6 +63,17 @@ export function resetChromeMock() {
     },
     tabs: {
       query: vi.fn(),
+    },
+    notifications: {
+      create: vi.fn(
+        (
+          _id: string,
+          _opts: unknown,
+          cb?: (notificationId: string) => void,
+        ) => {
+          cb?.(_id);
+        },
+      ),
     },
   };
 

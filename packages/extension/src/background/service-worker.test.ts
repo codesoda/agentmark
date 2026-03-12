@@ -22,6 +22,7 @@ import {
   isSupportedUrl,
   handleRuntimeMessage,
   handleContextMenuClick,
+  handleSaveRequest,
   CONTEXT_MENU_ID,
 } from "./service-worker";
 import { getNativeClient } from "../shared/native-messaging";
@@ -300,6 +301,122 @@ describe("service-worker", () => {
       );
 
       expect(mockClient.sendRequest).not.toHaveBeenCalled();
+    });
+
+    it("shows success notification after context-menu save", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "save_result",
+        id: "bm_123",
+        path: "/tmp/bm",
+        status: "created",
+      });
+
+      handleContextMenuClick(
+        { menuItemId: CONTEXT_MENU_ID, pageUrl: "https://example.com", editable: false } as chrome.contextMenus.OnClickData,
+        { title: "Example Page" } as chrome.tabs.Tab,
+      );
+
+      await vi.waitFor(() => {
+        expect(chromeMock.notifications.create).toHaveBeenCalled();
+        const [id, opts] = chromeMock.notifications.create.mock.calls[0];
+        expect(id).toContain("agentmark-save-");
+        expect(opts.type).toBe("basic");
+        expect(opts.title).toBe("Saved to AgentMark");
+        expect(opts.message).toBe("Example Page (created)");
+      });
+    });
+
+    it("shows error notification after context-menu save failure", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockRejectedValue(new Error("Host disconnected"));
+
+      handleContextMenuClick(
+        { menuItemId: CONTEXT_MENU_ID, pageUrl: "https://example.com", editable: false } as chrome.contextMenus.OnClickData,
+        { title: "Test" } as chrome.tabs.Tab,
+      );
+
+      await vi.waitFor(() => {
+        expect(chromeMock.notifications.create).toHaveBeenCalled();
+        const [id, opts] = chromeMock.notifications.create.mock.calls[0];
+        expect(id).toContain("agentmark-error-");
+        expect(opts.type).toBe("basic");
+        expect(opts.title).toBe("AgentMark Save Failed");
+        expect(opts.message).toBe("Host disconnected");
+      });
+    });
+
+    it("uses URL as notification fallback when no tab title", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "save_result",
+        id: "bm_1",
+        path: "/tmp/bm",
+        status: "created",
+      });
+
+      handleContextMenuClick(
+        { menuItemId: CONTEXT_MENU_ID, pageUrl: "https://example.com", editable: false } as chrome.contextMenus.OnClickData,
+        {} as chrome.tabs.Tab,
+      );
+
+      await vi.waitFor(() => {
+        expect(chromeMock.notifications.create).toHaveBeenCalled();
+        const [, opts] = chromeMock.notifications.create.mock.calls[0];
+        expect(opts.message).toBe("https://example.com (created)");
+      });
+    });
+
+    it("does not show notification for unsupported URL", () => {
+      handleContextMenuClick(
+        { menuItemId: CONTEXT_MENU_ID, pageUrl: "chrome://settings", editable: false } as chrome.contextMenus.OnClickData,
+        {} as chrome.tabs.Tab,
+      );
+
+      expect(chromeMock.notifications.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("handleSaveRequest - error normalization", () => {
+    it("normalizes native ErrorResponse to runtime failure", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "error",
+        message: "Failed to save: invalid URL",
+      });
+
+      const result = await handleSaveRequest({ type: "save", url: "https://example.com" });
+
+      expect(result).toEqual({
+        success: false,
+        error: "Failed to save: invalid URL",
+      });
+    });
+
+    it("returns success for save_result responses", async () => {
+      const mockClient = getMockClient();
+      const nativeResponse = { type: "save_result" as const, id: "abc", path: "/tmp", status: "created" };
+      mockClient.sendRequest.mockResolvedValue(nativeResponse);
+
+      const result = await handleSaveRequest({ type: "save", url: "https://example.com" });
+
+      expect(result).toEqual({
+        success: true,
+        data: nativeResponse,
+      });
+    });
+
+    it("returns success for status_result responses", async () => {
+      const mockClient = getMockClient();
+      const nativeResponse = { type: "status_result" as const, ok: true, version: "1.0.0" };
+      mockClient.sendRequest.mockResolvedValue(nativeResponse);
+
+      const result = await handleSaveRequest({ type: "status" });
+
+      expect(result).toEqual({
+        success: true,
+        data: nativeResponse,
+      });
     });
   });
 });

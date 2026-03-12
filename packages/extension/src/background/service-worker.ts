@@ -8,6 +8,7 @@
 
 import { getNativeClient } from "../shared/native-messaging";
 import type { RuntimeMessage, RuntimeResponse, NativeRequest } from "../shared/types";
+import { isErrorResponse } from "../shared/types";
 import { EXTENSION_NAME } from "../shared/constants";
 
 const CONTEXT_MENU_ID = "agentmark-save";
@@ -43,6 +44,9 @@ async function handleSaveRequest(request: NativeRequest): Promise<RuntimeRespons
   try {
     const client = getNativeClient();
     const response = await client.sendRequest(request);
+    if (isErrorResponse(response)) {
+      return { success: false, error: response.message };
+    }
     return { success: true, data: response };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -86,6 +90,25 @@ function handleRuntimeMessage(
   return false;
 }
 
+// --- Notifications ---
+
+function showNotification(
+  id: string,
+  title: string,
+  message: string,
+): void {
+  try {
+    chrome.notifications.create(id, {
+      type: "basic",
+      title,
+      message,
+      iconUrl: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48'%3E%3Crect width='48' height='48' rx='8' fill='%234F46E5'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dominant-baseline='middle' fill='white' font-size='24' font-family='sans-serif'%3EA%3C/text%3E%3C/svg%3E",
+    });
+  } catch {
+    // Notification API may not be available; fail silently
+  }
+}
+
 // --- Context menu click handler ---
 
 function handleContextMenuClick(
@@ -108,8 +131,18 @@ function handleContextMenuClick(
   };
 
   handleSaveRequest(nativeRequest).then((response) => {
-    if (!response.success) {
-      console.error("[AgentMark] Context menu save failed:", response.error);
+    if (response.success && response.data.type === "save_result") {
+      showNotification(
+        `agentmark-save-${Date.now()}`,
+        "Saved to AgentMark",
+        `${tab?.title ?? url} (${response.data.status})`,
+      );
+    } else if (!response.success) {
+      showNotification(
+        `agentmark-error-${Date.now()}`,
+        "AgentMark Save Failed",
+        response.error,
+      );
     }
   });
 }
@@ -135,5 +168,6 @@ export {
   handleRuntimeMessage,
   handleContextMenuClick,
   handleSaveRequest,
+  showNotification,
   CONTEXT_MENU_ID,
 };
