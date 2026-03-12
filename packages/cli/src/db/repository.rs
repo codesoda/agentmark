@@ -319,12 +319,14 @@ impl<'a> BookmarkRepository<'a> {
     ///
     /// - `collection`: exact match against the `collections` JSON array
     /// - `tag`: exact match against either `user_tags` or `suggested_tags` JSON arrays
+    /// - `state`: exact match against the `state` column
     pub fn list(
         &self,
         limit: usize,
         offset: usize,
         collection: Option<&str>,
         tag: Option<&str>,
+        state: Option<&BookmarkState>,
     ) -> Result<Vec<Bookmark>, DbError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -335,15 +337,8 @@ impl<'a> BookmarkRepository<'a> {
         let mut param_idx = 1;
 
         if let Some(c) = collection {
-            // Match exact JSON string element: the array contains `"value"`
-            let pattern = format!("%\"{}\",%", escape_like(c));
-            let pattern2 = format!("%\"{}\"%%", escape_like(c));
-            // Use a robust pattern: the value appears as a quoted string in the JSON array
-            let json_pattern = format!("%\"{}\"%%", escape_like(c));
-            // Simpler approach: check if the JSON array contains the exact quoted string
             sql.push_str(&format!(" AND collections LIKE ?{param_idx}"));
             param_values.push(Box::new(format!("%\"{}\"%%", escape_like(c))));
-            let _ = (pattern, pattern2, json_pattern); // suppress unused
             param_idx += 1;
         }
 
@@ -357,8 +352,14 @@ impl<'a> BookmarkRepository<'a> {
             param_idx += 1;
         }
 
+        if let Some(s) = state {
+            sql.push_str(&format!(" AND state = ?{param_idx}"));
+            param_values.push(Box::new(state_to_text(s).to_string()));
+            param_idx += 1;
+        }
+
         sql.push_str(&format!(
-            " ORDER BY saved_at DESC LIMIT ?{} OFFSET ?{}",
+            " ORDER BY saved_at DESC, id DESC LIMIT ?{} OFFSET ?{}",
             param_idx,
             param_idx + 1
         ));
@@ -701,7 +702,7 @@ mod tests {
             repo.insert(&bm).unwrap();
         }
 
-        let results = repo.list(10, 0, None, None).unwrap();
+        let results = repo.list(10, 0, None, None, None).unwrap();
         assert_eq!(results.len(), 3);
         // Most recent first
         assert!(results[0].saved_at >= results[1].saved_at);
@@ -720,9 +721,9 @@ mod tests {
             repo.insert(&bm).unwrap();
         }
 
-        let page1 = repo.list(2, 0, None, None).unwrap();
-        let page2 = repo.list(2, 2, None, None).unwrap();
-        let page3 = repo.list(2, 4, None, None).unwrap();
+        let page1 = repo.list(2, 0, None, None, None).unwrap();
+        let page2 = repo.list(2, 2, None, None, None).unwrap();
+        let page3 = repo.list(2, 4, None, None, None).unwrap();
 
         assert_eq!(page1.len(), 2);
         assert_eq!(page2.len(), 2);
@@ -737,7 +738,7 @@ mod tests {
         let repo = BookmarkRepository::new(&conn);
         let bm = sample_bookmark("https://example.com", "Test");
         repo.insert(&bm).unwrap();
-        assert!(repo.list(0, 0, None, None).unwrap().is_empty());
+        assert!(repo.list(0, 0, None, None, None).unwrap().is_empty());
     }
 
     #[test]
@@ -753,7 +754,7 @@ mod tests {
         bm2.collections = vec!["work".to_string()];
         repo.insert(&bm2).unwrap();
 
-        let results = repo.list(10, 0, Some("reading"), None).unwrap();
+        let results = repo.list(10, 0, Some("reading"), None, None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, bm1.id);
     }
@@ -771,7 +772,7 @@ mod tests {
         bm2.user_tags = vec!["python".to_string()];
         repo.insert(&bm2).unwrap();
 
-        let results = repo.list(10, 0, None, Some("rust")).unwrap();
+        let results = repo.list(10, 0, None, Some("rust"), None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, bm1.id);
     }
@@ -785,9 +786,90 @@ mod tests {
         bm.suggested_tags = vec!["ai".to_string()];
         repo.insert(&bm).unwrap();
 
-        let results = repo.list(10, 0, None, Some("ai")).unwrap();
+        let results = repo.list(10, 0, None, Some("ai"), None).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, bm.id);
+    }
+
+    // ── State filter ────────────────────────────────────────────────
+
+    #[test]
+    fn list_filter_by_state_inbox() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+
+        let bm1 = sample_bookmark("https://a.com", "A"); // default = inbox
+        repo.insert(&bm1).unwrap();
+
+        let mut bm2 = sample_bookmark("https://b.com", "B");
+        bm2.state = BookmarkState::Processed;
+        repo.insert(&bm2).unwrap();
+
+        let mut bm3 = sample_bookmark("https://c.com", "C");
+        bm3.state = BookmarkState::Archived;
+        repo.insert(&bm3).unwrap();
+
+        let results = repo
+            .list(10, 0, None, None, Some(&BookmarkState::Inbox))
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, bm1.id);
+    }
+
+    #[test]
+    fn list_filter_by_state_processed() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+
+        let bm1 = sample_bookmark("https://a.com", "A");
+        repo.insert(&bm1).unwrap();
+
+        let mut bm2 = sample_bookmark("https://b.com", "B");
+        bm2.state = BookmarkState::Processed;
+        repo.insert(&bm2).unwrap();
+
+        let results = repo
+            .list(10, 0, None, None, Some(&BookmarkState::Processed))
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, bm2.id);
+    }
+
+    #[test]
+    fn list_combined_state_and_tag_filter() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+
+        let mut bm1 = sample_bookmark("https://a.com", "A");
+        bm1.user_tags = vec!["rust".to_string()];
+        bm1.state = BookmarkState::Inbox;
+        repo.insert(&bm1).unwrap();
+
+        let mut bm2 = sample_bookmark("https://b.com", "B");
+        bm2.user_tags = vec!["rust".to_string()];
+        bm2.state = BookmarkState::Processed;
+        repo.insert(&bm2).unwrap();
+
+        let mut bm3 = sample_bookmark("https://c.com", "C");
+        bm3.user_tags = vec!["python".to_string()];
+        bm3.state = BookmarkState::Inbox;
+        repo.insert(&bm3).unwrap();
+
+        let results = repo
+            .list(10, 0, None, Some("rust"), Some(&BookmarkState::Inbox))
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, bm1.id);
+    }
+
+    #[test]
+    fn list_state_filter_on_empty_db() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let results = repo
+            .list(10, 0, None, None, Some(&BookmarkState::Inbox))
+            .unwrap();
+        assert!(results.is_empty());
     }
 
     // ── Collections ─────────────────────────────────────────────────

@@ -77,9 +77,33 @@ pub struct ListArgs {
     #[arg(long)]
     pub tag: Option<String>,
 
+    /// Filter by state (inbox, processed, archived)
+    #[arg(long, value_parser = parse_state_filter)]
+    pub state: Option<StateFilter>,
+
     /// Maximum number of results
     #[arg(long, default_value = "20")]
     pub limit: u32,
+}
+
+/// CLI-local state filter enum — maps to `models::BookmarkState` without
+/// coupling Clap derives to shared model types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateFilter {
+    Inbox,
+    Processed,
+    Archived,
+}
+
+fn parse_state_filter(s: &str) -> Result<StateFilter, String> {
+    match s {
+        "inbox" => Ok(StateFilter::Inbox),
+        "processed" => Ok(StateFilter::Processed),
+        "archived" => Ok(StateFilter::Archived),
+        _ => Err(format!(
+            "invalid state '{s}': expected inbox, processed, or archived"
+        )),
+    }
 }
 
 #[derive(clap::Args)]

@@ -163,6 +163,45 @@ fn list_parses_filters() {
     }
 }
 
+#[test]
+fn list_parses_state_filter() {
+    let cli = Cli::try_parse_from(["agentmark", "list", "--state", "processed"]).unwrap();
+    match cli.command {
+        cli::Commands::List(args) => {
+            assert_eq!(args.state, Some(cli::StateFilter::Processed));
+        }
+        _ => panic!("expected List"),
+    }
+}
+
+#[test]
+fn list_parses_all_states() {
+    for (input, expected) in [
+        ("inbox", cli::StateFilter::Inbox),
+        ("processed", cli::StateFilter::Processed),
+        ("archived", cli::StateFilter::Archived),
+    ] {
+        let cli = Cli::try_parse_from(["agentmark", "list", "--state", input]).unwrap();
+        match cli.command {
+            cli::Commands::List(args) => {
+                assert_eq!(args.state, Some(expected));
+            }
+            _ => panic!("expected List"),
+        }
+    }
+}
+
+#[test]
+fn list_rejects_invalid_state() {
+    assert!(Cli::try_parse_from(["agentmark", "list", "--state", "bogus"]).is_err());
+}
+
+#[test]
+fn list_help_contains_state_flag() {
+    let help = get_subcommand_help("list");
+    assert!(help.contains("--state"), "list help missing --state flag");
+}
+
 // ── Show command ────────────────────────────────────────────────────
 
 #[test]

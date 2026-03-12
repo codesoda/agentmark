@@ -6,7 +6,7 @@ const PENDING: &str = "[pending]";
 
 /// Optional body section content for bookmark.md rendering.
 /// Fields default to placeholder text when `None`.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct BodySections {
     pub summary: Option<String>,
     pub suggested_next_actions: Option<String>,

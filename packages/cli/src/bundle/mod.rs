@@ -178,6 +178,25 @@ impl Bundle {
         Ok(Self { path })
     }
 
+    /// Read the article content from `article.md`.
+    ///
+    /// Returns `BundleError::Io` if the file does not exist.
+    pub fn read_article_md(&self) -> Result<String, BundleError> {
+        let path = self.path.join("article.md");
+        std::fs::read_to_string(&path).map_err(|source| BundleError::Io { path, source })
+    }
+
+    /// Read and parse body sections from `bookmark.md`.
+    ///
+    /// Returns parsed `BodySections` (summary, suggested_next_actions, related_items).
+    /// Returns `BundleError::Io` if the file does not exist.
+    pub fn read_body_sections(&self) -> Result<BodySections, BundleError> {
+        let path = self.path.join("bookmark.md");
+        let content =
+            std::fs::read_to_string(&path).map_err(|source| BundleError::Io { path, source })?;
+        Ok(parse_body_sections(&content))
+    }
+
     /// Rewrite `bookmark.md` preserving existing body sections.
     ///
     /// Reads the current bookmark.md, extracts body section content,
@@ -739,5 +758,81 @@ mod tests {
         for line in &lines {
             BookmarkEvent::from_json_line(line).unwrap(); // all parseable
         }
+    }
+
+    // --- Read helper tests ---
+
+    #[test]
+    fn read_article_md_returns_content() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let article = "# Hello World\n\nSome content here.\n";
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), article, "", "cli").unwrap();
+
+        let read = bundle.read_article_md().unwrap();
+        assert_eq!(read, article);
+    }
+
+    #[test]
+    fn read_article_md_empty_file() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+
+        let read = bundle.read_article_md().unwrap();
+        assert_eq!(read, "");
+    }
+
+    #[test]
+    fn read_article_md_missing_file_errors() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+        std::fs::remove_file(bundle.path().join("article.md")).unwrap();
+
+        let result = bundle.read_article_md();
+        assert!(matches!(result.unwrap_err(), BundleError::Io { .. }));
+    }
+
+    #[test]
+    fn read_body_sections_with_enriched_content() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+
+        let sections = BodySections {
+            summary: Some("A great summary.".to_string()),
+            suggested_next_actions: Some("- Read more".to_string()),
+            related_items: None,
+        };
+        bundle.update_bookmark_md(&bm, &sections).unwrap();
+
+        let read = bundle.read_body_sections().unwrap();
+        assert_eq!(read.summary.as_deref(), Some("A great summary."));
+        assert_eq!(read.suggested_next_actions.as_deref(), Some("- Read more"));
+        assert!(read.related_items.is_none());
+    }
+
+    #[test]
+    fn read_body_sections_with_placeholders() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+
+        let read = bundle.read_body_sections().unwrap();
+        assert!(read.summary.is_none());
+        assert!(read.suggested_next_actions.is_none());
+        assert!(read.related_items.is_none());
+    }
+
+    #[test]
+    fn read_body_sections_missing_file_errors() {
+        let tmp = TempDir::new().unwrap();
+        let bm = test_bookmark();
+        let bundle = Bundle::create(tmp.path(), &bm, &test_metadata(), "", "", "cli").unwrap();
+        std::fs::remove_file(bundle.path().join("bookmark.md")).unwrap();
+
+        let result = bundle.read_body_sections();
+        assert!(matches!(result.unwrap_err(), BundleError::Io { .. }));
     }
 }
