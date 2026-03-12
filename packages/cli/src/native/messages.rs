@@ -61,6 +61,13 @@ pub enum IncomingMessage {
         #[serde(default)]
         state: Option<BookmarkState>,
     },
+    /// Show full details for a single bookmark.
+    Show { id: String },
+    /// Update bookmark metadata fields.
+    Update {
+        id: String,
+        changes: BookmarkChanges,
+    },
 }
 
 /// Messages sent from the native host back to the Chrome extension.
@@ -79,6 +86,10 @@ pub enum OutgoingMessage {
     ListCollectionsResult { collections: Vec<String> },
     /// Result of a bookmark listing.
     ListResult { bookmarks: Vec<BookmarkSummary> },
+    /// Result of a bookmark detail lookup.
+    ShowResult { bookmark: BookmarkDetail },
+    /// Result of a bookmark update.
+    UpdateResult { bookmark: BookmarkDetail },
     /// Error response for any failed operation.
     Error { message: String },
 }
@@ -93,6 +104,54 @@ pub struct BookmarkSummary {
     pub user_tags: Vec<String>,
     pub suggested_tags: Vec<String>,
     pub saved_at: String,
+}
+
+/// Full detail DTO for a single bookmark — used by show and update responses.
+/// Excludes article body to keep payloads bounded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookmarkDetail {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub summary: Option<String>,
+    pub saved_at: String,
+    pub capture_source: String,
+    pub state: BookmarkState,
+    pub user_tags: Vec<String>,
+    pub suggested_tags: Vec<String>,
+    pub collections: Vec<String>,
+    pub note: Option<String>,
+}
+
+/// Typed changes for bookmark update requests.
+/// All fields are optional — absent means "leave unchanged".
+/// `note` uses double-option: outer `None` = leave unchanged, `Some(None)` = clear, `Some(Some(v))` = set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookmarkChanges {
+    #[serde(default)]
+    pub user_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub suggested_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub collections: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub note: Option<Option<String>>,
+    #[serde(default)]
+    pub state: Option<BookmarkState>,
+}
+
+/// Deserialize a double-option field:
+/// - absent / undefined → `None` (leave unchanged)
+/// - `null` → `Some(None)` (clear)
+/// - `"value"` → `Some(Some("value"))` (set)
+fn deserialize_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // When the field is present (even if null), serde calls this function.
+    // null → Some(None), "text" → Some(Some("text"))
+    let value: Option<String> = Option::deserialize(deserializer)?;
+    Ok(Some(value))
 }
 
 impl OutgoingMessage {
@@ -119,7 +178,7 @@ impl IncomingMessage {
             .ok_or(MessageError::MissingType)?;
 
         match type_str {
-            "save" | "status" | "list_collections" | "list" => {
+            "save" | "status" | "list_collections" | "list" | "show" | "update" => {
                 // Use serde for full field validation.
                 serde_json::from_value(value)
                     .map_err(|e| MessageError::InvalidFields(e.to_string()))
@@ -478,5 +537,179 @@ mod tests {
             }
             _ => panic!("expected Save"),
         }
+    }
+
+    // -- Show --
+
+    #[test]
+    fn deserialize_show() {
+        let value = json!({"type": "show", "id": "am_123"});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        assert_eq!(
+            msg,
+            IncomingMessage::Show {
+                id: "am_123".into()
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_show_missing_id() {
+        let value = json!({"type": "show"});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(matches!(err, MessageError::InvalidFields(_)));
+    }
+
+    #[test]
+    fn serialize_show_result() {
+        let msg = OutgoingMessage::ShowResult {
+            bookmark: BookmarkDetail {
+                id: "am_123".into(),
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                summary: Some("A summary".into()),
+                saved_at: "2026-03-12T00:00:00Z".into(),
+                capture_source: "cli".into(),
+                state: BookmarkState::Inbox,
+                user_tags: vec!["rust".into()],
+                suggested_tags: vec!["dev".into()],
+                collections: vec!["reading".into()],
+                note: Some("my note".into()),
+            },
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "show_result");
+        assert_eq!(value["bookmark"]["id"], "am_123");
+        assert_eq!(value["bookmark"]["summary"], "A summary");
+        assert_eq!(value["bookmark"]["note"], "my note");
+        assert_eq!(value["bookmark"]["collections"][0], "reading");
+    }
+
+    #[test]
+    fn serialize_show_result_null_optionals() {
+        let msg = OutgoingMessage::ShowResult {
+            bookmark: BookmarkDetail {
+                id: "am_456".into(),
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                summary: None,
+                saved_at: "2026-03-12T00:00:00Z".into(),
+                capture_source: "chrome_extension".into(),
+                state: BookmarkState::Processed,
+                user_tags: vec![],
+                suggested_tags: vec![],
+                collections: vec![],
+                note: None,
+            },
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "show_result");
+        assert!(value["bookmark"]["summary"].is_null());
+        assert!(value["bookmark"]["note"].is_null());
+        assert!(value["bookmark"]["user_tags"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    // -- Update --
+
+    #[test]
+    fn deserialize_update_with_all_changes() {
+        let value = json!({
+            "type": "update",
+            "id": "am_123",
+            "changes": {
+                "user_tags": ["rust", "cli"],
+                "suggested_tags": ["dev"],
+                "collections": ["reading"],
+                "note": "updated note",
+                "state": "processed"
+            }
+        });
+        let msg = IncomingMessage::from_value(value).unwrap();
+        match msg {
+            IncomingMessage::Update { id, changes } => {
+                assert_eq!(id, "am_123");
+                assert_eq!(changes.user_tags, Some(vec!["rust".into(), "cli".into()]));
+                assert_eq!(changes.suggested_tags, Some(vec!["dev".into()]));
+                assert_eq!(changes.collections, Some(vec!["reading".into()]));
+                assert_eq!(changes.note, Some(Some("updated note".into())));
+                assert_eq!(changes.state, Some(BookmarkState::Processed));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn deserialize_update_with_empty_changes() {
+        let value = json!({"type": "update", "id": "am_123", "changes": {}});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        match msg {
+            IncomingMessage::Update { id, changes } => {
+                assert_eq!(id, "am_123");
+                assert!(changes.user_tags.is_none());
+                assert!(changes.suggested_tags.is_none());
+                assert!(changes.collections.is_none());
+                assert!(changes.note.is_none());
+                assert!(changes.state.is_none());
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn deserialize_update_note_null_clears() {
+        let value = json!({"type": "update", "id": "am_123", "changes": {"note": null}});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        match msg {
+            IncomingMessage::Update { changes, .. } => {
+                assert_eq!(changes.note, Some(None));
+            }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn deserialize_update_missing_id() {
+        let value = json!({"type": "update", "changes": {}});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(matches!(err, MessageError::InvalidFields(_)));
+    }
+
+    #[test]
+    fn deserialize_update_missing_changes() {
+        let value = json!({"type": "update", "id": "am_123"});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(matches!(err, MessageError::InvalidFields(_)));
+    }
+
+    #[test]
+    fn deserialize_update_invalid_state() {
+        let value = json!({"type": "update", "id": "am_123", "changes": {"state": "deleted"}});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(matches!(err, MessageError::InvalidFields(_)));
+    }
+
+    #[test]
+    fn serialize_update_result() {
+        let msg = OutgoingMessage::UpdateResult {
+            bookmark: BookmarkDetail {
+                id: "am_123".into(),
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                summary: None,
+                saved_at: "2026-03-12T00:00:00Z".into(),
+                capture_source: "cli".into(),
+                state: BookmarkState::Processed,
+                user_tags: vec!["rust".into()],
+                suggested_tags: vec![],
+                collections: vec![],
+                note: None,
+            },
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(value["type"], "update_result");
+        assert_eq!(value["bookmark"]["state"], "processed");
     }
 }

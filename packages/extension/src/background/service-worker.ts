@@ -103,6 +103,16 @@ function handleRuntimeMessage(
     return true;
   }
 
+  if (message.type === "show") {
+    handleNativeRequest({ type: "show", id: message.id }).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "update") {
+    handleNativeRequest({ type: "update", id: message.id, changes: message.changes }).then(sendResponse);
+    return true;
+  }
+
   sendResponse({ success: false, error: `Unknown message type: ${(message as Record<string, unknown>).type}` });
   return false;
 }

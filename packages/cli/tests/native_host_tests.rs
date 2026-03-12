@@ -653,6 +653,347 @@ fn list_then_status_continues_loop() {
     assert_eq!(responses[1]["type"], "status_result");
 }
 
+// ── Show integration tests ──────────────────────────────────────────
+
+fn show_bookmark(home: &Path, id: &str) -> serde_json::Value {
+    let stdin = frame(&json!({"type": "show", "id": id}));
+    let output = agentmark_cmd(home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), 1);
+    responses[0].clone()
+}
+
+fn update_bookmark(home: &Path, id: &str, changes: serde_json::Value) -> serde_json::Value {
+    let stdin = frame(&json!({"type": "update", "id": id, "changes": changes}));
+    let output = agentmark_cmd(home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), 1);
+    responses[0].clone()
+}
+
+#[test]
+fn show_returns_detail_for_saved_bookmark() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/show-test")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/show-test", server.url());
+    let save_resp = save_bookmark(&home, &url, "Show Test", &["tag1"]);
+    let id = save_resp["id"].as_str().unwrap();
+
+    let resp = show_bookmark(&home, id);
+    assert_eq!(resp["type"], "show_result");
+    let bm = &resp["bookmark"];
+    assert_eq!(bm["id"], id);
+    assert_eq!(bm["url"], url);
+    assert_eq!(bm["state"], "inbox");
+    assert_eq!(bm["capture_source"], "chrome_extension");
+    let user_tags: Vec<&str> = bm["user_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(user_tags, vec!["tag1"]);
+    assert!(bm["suggested_tags"].as_array().unwrap().is_empty());
+    assert!(bm["saved_at"].as_str().is_some());
+    assert!(bm["collections"].as_array().is_some());
+}
+
+#[test]
+fn show_unknown_id_returns_error() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let resp = show_bookmark(&home, "am_nonexistent");
+    assert_eq!(resp["type"], "error");
+    assert!(
+        resp["message"].as_str().unwrap().contains("not found"),
+        "error message should mention not found"
+    );
+}
+
+// ── Update integration tests ────────────────────────────────────────
+
+#[test]
+fn update_note_persists_to_db_and_bundle() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/update-note")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/update-note", server.url());
+    let save_resp = save_bookmark(&home, &url, "Update Note", &[]);
+    let id = save_resp["id"].as_str().unwrap();
+
+    let resp = update_bookmark(&home, id, json!({"note": "my note"}));
+    assert_eq!(resp["type"], "update_result");
+    assert_eq!(resp["bookmark"]["note"], "my note");
+
+    // Verify via show
+    let show_resp = show_bookmark(&home, id);
+    assert_eq!(show_resp["bookmark"]["note"], "my note");
+
+    // Verify in DB
+    let db_path = home.join(".agentmark/index.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let note: Option<String> = conn
+        .query_row("SELECT note FROM bookmarks WHERE id = ?", [id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(note, Some("my note".to_string()));
+
+    // Verify in bundle
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    let bm_md = std::fs::read_to_string(bundle_dirs[0].join("bookmark.md")).unwrap();
+    assert!(bm_md.contains("my note"), "bundle should contain the note");
+}
+
+#[test]
+fn update_state_persists() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/update-state")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/update-state", server.url());
+    let save_resp = save_bookmark(&home, &url, "Update State", &[]);
+    let id = save_resp["id"].as_str().unwrap();
+
+    let resp = update_bookmark(&home, id, json!({"state": "processed"}));
+    assert_eq!(resp["type"], "update_result");
+    assert_eq!(resp["bookmark"]["state"], "processed");
+
+    // Verify via show
+    let show_resp = show_bookmark(&home, id);
+    assert_eq!(show_resp["bookmark"]["state"], "processed");
+}
+
+#[test]
+fn update_tags_accept_reject_persists_separate_arrays() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/update-tags")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/update-tags", server.url());
+    let save_resp = save_bookmark(&home, &url, "Tag Test", &["original"]);
+    let id = save_resp["id"].as_str().unwrap();
+
+    // Simulate accepting a suggested tag by setting both arrays
+    let resp = update_bookmark(
+        &home,
+        id,
+        json!({
+            "user_tags": ["original", "accepted"],
+            "suggested_tags": ["remaining"]
+        }),
+    );
+    assert_eq!(resp["type"], "update_result");
+
+    let bm = &resp["bookmark"];
+    let user_tags: Vec<&str> = bm["user_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(user_tags, vec!["original", "accepted"]);
+    let suggested: Vec<&str> = bm["suggested_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(suggested, vec!["remaining"]);
+
+    // Verify via show that arrays stayed separate
+    let show_resp = show_bookmark(&home, id);
+    let show_user: Vec<&str> = show_resp["bookmark"]["user_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(show_user, vec!["original", "accepted"]);
+}
+
+#[test]
+fn update_collections_clear_and_note_null() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/clear-test")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/clear-test", server.url());
+    let save_resp = save_bookmark(&home, &url, "Clear Test", &[]);
+    let id = save_resp["id"].as_str().unwrap();
+
+    // First set a note and collection
+    update_bookmark(
+        &home,
+        id,
+        json!({"note": "temp note", "collections": ["reading"]}),
+    );
+
+    // Now clear them
+    let resp = update_bookmark(&home, id, json!({"note": null, "collections": []}));
+    assert_eq!(resp["type"], "update_result");
+    assert!(resp["bookmark"]["note"].is_null());
+    assert!(resp["bookmark"]["collections"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // Verify persistence
+    let show_resp = show_bookmark(&home, id);
+    assert!(show_resp["bookmark"]["note"].is_null());
+    assert!(show_resp["bookmark"]["collections"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn update_missing_id_returns_error() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let resp = update_bookmark(&home, "am_nonexistent", json!({"note": "test"}));
+    assert_eq!(resp["type"], "error");
+    assert!(resp["message"].as_str().unwrap().contains("not found"));
+}
+
+#[test]
+fn update_malformed_then_valid_continues_loop() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    // Send an update with invalid state, then a valid status request
+    let stdin = frame_all(&[
+        json!({"type": "update", "id": "am_bad", "changes": {"state": "deleted"}}),
+        json!({"type": "status"}),
+    ]);
+    let output = agentmark_cmd(&home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["type"], "error");
+    assert_eq!(responses[1]["type"], "status_result");
+}
+
+#[test]
+fn show_then_update_then_show_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/roundtrip")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/roundtrip", server.url());
+    let save_resp = save_bookmark(&home, &url, "Roundtrip", &["init"]);
+    let id = save_resp["id"].as_str().unwrap();
+
+    // Show, update, show in one stream
+    let stdin = frame_all(&[
+        json!({"type": "show", "id": id}),
+        json!({"type": "update", "id": id, "changes": {"note": "updated", "state": "processed"}}),
+        json!({"type": "show", "id": id}),
+    ]);
+    let output = agentmark_cmd(&home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), 3);
+    assert_eq!(responses[0]["type"], "show_result");
+    assert_eq!(responses[0]["bookmark"]["state"], "inbox");
+    assert!(responses[0]["bookmark"]["note"].is_null());
+
+    assert_eq!(responses[1]["type"], "update_result");
+    assert_eq!(responses[1]["bookmark"]["state"], "processed");
+    assert_eq!(responses[1]["bookmark"]["note"], "updated");
+
+    assert_eq!(responses[2]["type"], "show_result");
+    assert_eq!(responses[2]["bookmark"]["state"], "processed");
+    assert_eq!(responses[2]["bookmark"]["note"], "updated");
+}
+
+// ── Other edge case tests ───────────────────────────────────────────
+
 #[test]
 fn list_with_invalid_state_returns_error() {
     let tmp = TempDir::new().unwrap();

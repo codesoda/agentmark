@@ -1,3 +1,4 @@
+pub mod bookmark_detail;
 pub mod collections;
 pub mod init;
 pub mod list;

@@ -247,3 +247,107 @@ describe("isErrorResponse", () => {
     expect(isErrorResponse({ type: "status_result", ok: true, version: "1.0" })).toBe(false);
   });
 });
+
+describe("parseNativeResponse - show_result", () => {
+  const validBookmark = {
+    id: "am_1",
+    url: "https://example.com",
+    title: "Test",
+    summary: "A summary",
+    saved_at: "2026-03-12T00:00:00Z",
+    capture_source: "cli",
+    state: "inbox",
+    user_tags: ["rust"],
+    suggested_tags: ["ai"],
+    collections: ["reading"],
+    note: null,
+  };
+
+  it("parses valid show_result", () => {
+    const result = parseNativeResponse({ type: "show_result", bookmark: validBookmark });
+    expect(result.type).toBe("show_result");
+    if (result.type === "show_result") {
+      expect(result.bookmark.id).toBe("am_1");
+      expect(result.bookmark.summary).toBe("A summary");
+      expect(result.bookmark.note).toBeNull();
+    }
+  });
+
+  it("rejects show_result with missing bookmark", () => {
+    expect(() => parseNativeResponse({ type: "show_result" })).toThrow("missing 'bookmark' object");
+  });
+
+  it("rejects show_result with invalid bookmark fields", () => {
+    expect(() => parseNativeResponse({
+      type: "show_result",
+      bookmark: { ...validBookmark, state: "invalid" },
+    })).toThrow("invalid or missing fields");
+  });
+
+  it("rejects show_result with non-string collections", () => {
+    expect(() => parseNativeResponse({
+      type: "show_result",
+      bookmark: { ...validBookmark, collections: [1, 2] },
+    })).toThrow("non-string collections");
+  });
+
+  it("accepts show_result with null summary", () => {
+    const result = parseNativeResponse({
+      type: "show_result",
+      bookmark: { ...validBookmark, summary: null },
+    });
+    if (result.type === "show_result") {
+      expect(result.bookmark.summary).toBeNull();
+    }
+  });
+
+  it("rejects show_result with numeric summary", () => {
+    expect(() => parseNativeResponse({
+      type: "show_result",
+      bookmark: { ...validBookmark, summary: 42 },
+    })).toThrow("invalid summary");
+  });
+});
+
+describe("parseNativeResponse - update_result", () => {
+  const validBookmark = {
+    id: "am_1",
+    url: "https://example.com",
+    title: "Test",
+    summary: "A summary",
+    saved_at: "2026-03-12T00:00:00Z",
+    capture_source: "cli",
+    state: "processed",
+    user_tags: ["rust", "ai"],
+    suggested_tags: [],
+    collections: [],
+    note: "Updated note",
+  };
+
+  it("parses valid update_result", () => {
+    const result = parseNativeResponse({ type: "update_result", bookmark: validBookmark });
+    expect(result.type).toBe("update_result");
+    if (result.type === "update_result") {
+      expect(result.bookmark.state).toBe("processed");
+      expect(result.bookmark.note).toBe("Updated note");
+    }
+  });
+
+  it("rejects update_result with missing bookmark", () => {
+    expect(() => parseNativeResponse({ type: "update_result" })).toThrow("missing 'bookmark' object");
+  });
+
+  it("rejects update_result with non-string user_tags", () => {
+    expect(() => parseNativeResponse({
+      type: "update_result",
+      bookmark: { ...validBookmark, user_tags: [42] },
+    })).toThrow("non-string user_tags");
+  });
+
+  it("rejects update_result with invalid note type", () => {
+    expect(() => parseNativeResponse({
+      type: "update_result",
+      bookmark: { ...validBookmark, note: 123 },
+    })).toThrow("invalid note");
+  });
+});

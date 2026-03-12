@@ -2,14 +2,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, fireEvent, cleanup } from "@testing-library/react";
 import { resetChromeMock } from "../test/chrome-mock";
-import type { BookmarkSummary } from "../shared/types";
+import type { BookmarkSummary, BookmarkDetail } from "../shared/types";
 
 vi.mock("../shared/runtime", () => ({
   sendListBookmarksMessage: vi.fn(),
+  sendListCollectionsMessage: vi.fn(),
+  sendShowBookmarkMessage: vi.fn(),
+  sendUpdateBookmarkMessage: vi.fn(),
 }));
 
 import SidePanel from "./SidePanel";
-import { sendListBookmarksMessage } from "../shared/runtime";
+import {
+  sendListBookmarksMessage,
+  sendListCollectionsMessage,
+  sendShowBookmarkMessage,
+  sendUpdateBookmarkMessage,
+} from "../shared/runtime";
 
 function makeBookmark(id: string, overrides: Partial<BookmarkSummary> = {}): BookmarkSummary {
   return {
@@ -20,6 +28,23 @@ function makeBookmark(id: string, overrides: Partial<BookmarkSummary> = {}): Boo
     user_tags: [],
     suggested_tags: [],
     saved_at: "2026-03-12T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function makeDetail(id: string, overrides: Partial<BookmarkDetail> = {}): BookmarkDetail {
+  return {
+    id,
+    url: `https://example.com/${id}`,
+    title: `Bookmark ${id}`,
+    summary: "A summary",
+    saved_at: "2026-03-12T00:00:00Z",
+    capture_source: "cli",
+    state: "inbox",
+    user_tags: [],
+    suggested_tags: ["ai", "rust"],
+    collections: [],
+    note: null,
     ...overrides,
   };
 }
@@ -133,30 +158,153 @@ describe("SidePanel", () => {
     vi.mocked(sendListBookmarksMessage).mockResolvedValue({
       bookmarks: [makeBookmark("am_456")],
     });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_456"),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
 
     render(<SidePanel />);
     await screen.findByTestId("bookmark-card-am_456");
 
-    fireEvent.click(screen.getByTestId("bookmark-card-am_456"));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_456"));
+    });
 
-    expect(screen.getByTestId("detail-view")).toBeDefined();
-    expect(screen.getByTestId("selected-id").textContent).toContain("am_456");
+    expect(await screen.findByTestId("detail-view")).toBeDefined();
+    expect(screen.getByTestId("bookmark-detail")).toBeDefined();
   });
 
   it("navigates back to list from detail view", async () => {
     vi.mocked(sendListBookmarksMessage).mockResolvedValue({
       bookmarks: [makeBookmark("am_456")],
     });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_456"),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
 
     render(<SidePanel />);
     await screen.findByTestId("bookmark-card-am_456");
 
-    fireEvent.click(screen.getByTestId("bookmark-card-am_456"));
-    expect(screen.getByTestId("detail-view")).toBeDefined();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_456"));
+    });
+
+    expect(await screen.findByTestId("detail-view")).toBeDefined();
 
     fireEvent.click(screen.getByTestId("back-to-list"));
     expect(screen.queryByTestId("detail-view")).toBeNull();
     expect(screen.getByTestId("bookmark-card-am_456")).toBeDefined();
+  });
+
+  it("shows detail loading state", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_789")],
+    });
+    let resolveShow!: (val: { bookmark: BookmarkDetail }) => void;
+    vi.mocked(sendShowBookmarkMessage).mockReturnValue(
+      new Promise((resolve) => { resolveShow = resolve; }),
+    );
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_789");
+
+    fireEvent.click(screen.getByTestId("bookmark-card-am_789"));
+
+    expect(screen.getByTestId("detail-loading")).toBeDefined();
+
+    await act(async () => resolveShow({ bookmark: makeDetail("am_789") }));
+    expect(screen.getByTestId("bookmark-detail")).toBeDefined();
+  });
+
+  it("shows detail error state", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_err")],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      error: "bookmark not found",
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_err");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_err"));
+    });
+
+    expect(await screen.findByTestId("detail-error")).toBeDefined();
+    expect(screen.getByTestId("detail-error").textContent).toContain("bookmark not found");
+  });
+
+  it("updates bookmark and patches list state", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_upd", { user_tags: ["old"] })],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_upd", { user_tags: ["old"], suggested_tags: ["ai"] }),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+    vi.mocked(sendUpdateBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_upd", { user_tags: ["old", "ai"], suggested_tags: [] }),
+    });
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_upd");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_upd"));
+    });
+
+    await screen.findByTestId("bookmark-detail");
+
+    // Accept the suggested tag
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("accept-tag-ai"));
+    });
+
+    expect(sendUpdateBookmarkMessage).toHaveBeenCalledWith(
+      "am_upd",
+      expect.objectContaining({ user_tags: ["old", "ai"], suggested_tags: [] }),
+    );
+  });
+
+  it("removes item from list when state change excludes it from active filter", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_state", { state: "inbox" })],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_state"),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+    vi.mocked(sendUpdateBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_state", { state: "processed" }),
+    });
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_state");
+
+    // Switch to inbox filter
+    fireEvent.click(screen.getByTestId("filter-inbox"));
+    await screen.findByTestId("bookmark-card-am_state");
+
+    // Open detail
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_state"));
+    });
+    await screen.findByTestId("bookmark-detail");
+
+    // Mark processed
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("state-transition-btn"));
+    });
+
+    // Navigate back
+    fireEvent.click(screen.getByTestId("back-to-list"));
+
+    // Item should be removed from the inbox-filtered list
+    expect(screen.queryByTestId("bookmark-card-am_state")).toBeNull();
   });
 
   it("ignores stale responses when filter changes rapidly", async () => {

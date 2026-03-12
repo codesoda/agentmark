@@ -7,12 +7,13 @@
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use crate::commands::bookmark_detail;
 use crate::commands::save::{self, DedupResult, SaveRequest};
 use crate::config;
 use crate::db::BookmarkRepository;
 use crate::enrich::ProviderFactory;
 use crate::models::{BookmarkState, CaptureSource};
-use crate::native::messages::{BookmarkSummary, IncomingMessage, OutgoingMessage};
+use crate::native::messages::{BookmarkChanges, BookmarkSummary, IncomingMessage, OutgoingMessage};
 use crate::native::protocol::{self, ProtocolError};
 
 // ── Public entry point ──────────────────────────────────────────────
@@ -113,6 +114,8 @@ fn dispatch(
         }
         IncomingMessage::ListCollections => handle_list_collections(home),
         IncomingMessage::List { limit, state } => handle_list(home, limit, state),
+        IncomingMessage::Show { id } => handle_show(home, &id),
+        IncomingMessage::Update { id, changes } => handle_update(home, &id, &changes),
     }
 }
 
@@ -227,6 +230,24 @@ fn handle_list(home: &Path, limit: Option<u32>, state: Option<BookmarkState>) ->
             }
         }
         Err(e) => OutgoingMessage::error(format!("failed to list bookmarks: {e}")),
+    }
+}
+
+fn handle_show(home: &Path, id: &str) -> OutgoingMessage {
+    match bookmark_detail::load_bookmark_detail(home, id) {
+        Ok(loaded) => OutgoingMessage::ShowResult {
+            bookmark: loaded.to_detail_dto(),
+        },
+        Err(e) => OutgoingMessage::error(e.to_string()),
+    }
+}
+
+fn handle_update(home: &Path, id: &str, changes: &BookmarkChanges) -> OutgoingMessage {
+    match bookmark_detail::apply_bookmark_update(home, id, changes) {
+        Ok(loaded) => OutgoingMessage::UpdateResult {
+            bookmark: loaded.to_detail_dto(),
+        },
+        Err(e) => OutgoingMessage::error(e.to_string()),
     }
 }
 
@@ -592,6 +613,91 @@ mod tests {
         let responses = decode_responses(&stdout);
         assert_eq!(responses.len(), 2);
         // list_collections fails because /nonexistent has no DB
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[1]["type"], "status_result");
+    }
+
+    // ── Show/Update dispatch tests ───────────────────────────────────
+
+    #[test]
+    fn dispatch_show_with_no_config_returns_error() {
+        let home = std::path::PathBuf::from("/nonexistent");
+        let factory: &ProviderFactory = &|_, _| {
+            Err(crate::agent::AgentError::InvalidAgent {
+                value: "test".to_string(),
+            })
+        };
+        let response = dispatch(
+            IncomingMessage::Show {
+                id: "am_123".to_string(),
+            },
+            &home,
+            &factory,
+        );
+        match response {
+            OutgoingMessage::Error { message } => {
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_update_with_no_config_returns_error() {
+        let home = std::path::PathBuf::from("/nonexistent");
+        let factory: &ProviderFactory = &|_, _| {
+            Err(crate::agent::AgentError::InvalidAgent {
+                value: "test".to_string(),
+            })
+        };
+        let response = dispatch(
+            IncomingMessage::Update {
+                id: "am_123".to_string(),
+                changes: crate::native::messages::BookmarkChanges {
+                    user_tags: None,
+                    suggested_tags: None,
+                    collections: None,
+                    note: None,
+                    state: None,
+                },
+            },
+            &home,
+            &factory,
+        );
+        match response {
+            OutgoingMessage::Error { message } => {
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn show_request_returns_error_and_loop_continues() {
+        let stdin = frame_messages(&[
+            json!({"type": "show", "id": "am_123"}),
+            json!({"type": "status"}),
+        ]);
+        let (stdout, result) = run_host_status_only(&stdin);
+        assert!(result.is_ok());
+
+        let responses = decode_responses(&stdout);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[1]["type"], "status_result");
+    }
+
+    #[test]
+    fn update_request_returns_error_and_loop_continues() {
+        let stdin = frame_messages(&[
+            json!({"type": "update", "id": "am_123", "changes": {"state": "processed"}}),
+            json!({"type": "status"}),
+        ]);
+        let (stdout, result) = run_host_status_only(&stdin);
+        assert!(result.is_ok());
+
+        let responses = decode_responses(&stdout);
+        assert_eq!(responses.len(), 2);
         assert_eq!(responses[0]["type"], "error");
         assert_eq!(responses[1]["type"], "status_result");
     }

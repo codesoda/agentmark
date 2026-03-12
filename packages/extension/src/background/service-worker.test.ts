@@ -610,4 +610,145 @@ describe("service-worker", () => {
       );
     });
   });
+
+  describe("handleRuntimeMessage - show", () => {
+    it("forwards show request to native client", async () => {
+      const mockClient = getMockClient();
+      const bookmark = {
+        id: "am_1",
+        url: "https://example.com",
+        title: "Example",
+        summary: "A summary",
+        saved_at: "2026-03-12T00:00:00Z",
+        capture_source: "cli",
+        state: "inbox" as const,
+        user_tags: ["rust"],
+        suggested_tags: ["ai"],
+        collections: ["reading"],
+        note: null,
+      };
+      const nativeResponse = { type: "show_result" as const, bookmark };
+      mockClient.sendRequest.mockResolvedValue(nativeResponse);
+
+      const sendResponse = vi.fn();
+      const result = handleRuntimeMessage(
+        { type: "show", id: "am_1" },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      expect(result).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: true,
+          data: nativeResponse,
+        });
+      });
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({
+        type: "show",
+        id: "am_1",
+      });
+    });
+
+    it("returns error when show request fails", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({
+        type: "error",
+        message: "Bookmark not found",
+      });
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(
+        { type: "show", id: "am_missing" },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: "Bookmark not found",
+        });
+      });
+    });
+  });
+
+  describe("handleRuntimeMessage - update", () => {
+    it("forwards update request to native client", async () => {
+      const mockClient = getMockClient();
+      const bookmark = {
+        id: "am_1",
+        url: "https://example.com",
+        title: "Example",
+        summary: "A summary",
+        saved_at: "2026-03-12T00:00:00Z",
+        capture_source: "cli",
+        state: "processed" as const,
+        user_tags: ["rust", "ai"],
+        suggested_tags: [],
+        collections: ["reading"],
+        note: "Updated",
+      };
+      const nativeResponse = { type: "update_result" as const, bookmark };
+      mockClient.sendRequest.mockResolvedValue(nativeResponse);
+
+      const sendResponse = vi.fn();
+      const result = handleRuntimeMessage(
+        { type: "update", id: "am_1", changes: { state: "processed" } },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      expect(result).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: true,
+          data: nativeResponse,
+        });
+      });
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({
+        type: "update",
+        id: "am_1",
+        changes: { state: "processed" },
+      });
+    });
+
+    it("returns error when update request fails", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockRejectedValue(new Error("Host disconnected"));
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(
+        { type: "update", id: "am_1", changes: { note: "test" } },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: false,
+          error: "Host disconnected",
+        });
+      });
+    });
+  });
+
+  describe("handleRuntimeMessage - unknown type", () => {
+    it("returns error for unknown message type", () => {
+      const sendResponse = vi.fn();
+      const result = handleRuntimeMessage(
+        { type: "unknown_type" } as unknown as import("../shared/types").RuntimeMessage,
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      expect(result).toBe(false);
+      expect(sendResponse).toHaveBeenCalledWith({
+        success: false,
+        error: "Unknown message type: unknown_type",
+      });
+    });
+  });
 });

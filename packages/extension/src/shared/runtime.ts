@@ -3,7 +3,7 @@
  * Keeps callback-style Chrome APIs out of React components.
  */
 
-import type { BookmarkSummary, BookmarkStateFilter, RuntimeMessage, RuntimeResponse, RuntimeSaveMessage } from "./types";
+import type { BookmarkChanges, BookmarkDetail, BookmarkSummary, BookmarkStateFilter, RuntimeMessage, RuntimeResponse, RuntimeSaveMessage, ShowResultResponse, UpdateResultResponse } from "./types";
 
 export interface ActiveTab {
   url: string;
@@ -118,6 +118,41 @@ export async function sendListBookmarksMessage(options?: {
     ? `Unexpected response type: ${response.data.type}`
     : response.error;
   return { bookmarks: [], error };
+}
+
+export interface ShowBookmarkResult {
+  bookmark?: BookmarkDetail;
+  error?: string;
+}
+
+export async function sendShowBookmarkMessage(id: string): Promise<ShowBookmarkResult> {
+  const response = await sendRuntimeMessage({ type: "show", id });
+  if (response.success && response.data.type === "show_result") {
+    return { bookmark: (response.data as ShowResultResponse).bookmark };
+  }
+  const error = response.success
+    ? `Unexpected response type: ${response.data.type}`
+    : response.error;
+  return { error };
+}
+
+export interface UpdateBookmarkResult {
+  bookmark?: BookmarkDetail;
+  error?: string;
+}
+
+export async function sendUpdateBookmarkMessage(
+  id: string,
+  changes: BookmarkChanges,
+): Promise<UpdateBookmarkResult> {
+  const response = await sendRuntimeMessage({ type: "update", id, changes });
+  if (response.success && response.data.type === "update_result") {
+    return { bookmark: (response.data as UpdateResultResponse).bookmark };
+  }
+  const error = response.success
+    ? `Unexpected response type: ${response.data.type}`
+    : response.error;
+  return { error };
 }
 
 export async function sendListCollectionsMessage(): Promise<string[]> {

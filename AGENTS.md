@@ -20,6 +20,7 @@
 - Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
 - DB layer accepts explicit paths/connections; `config.rs` remains the only HOME-aware module
 - Commands are in `src/commands/` module tree (`init.rs`, `save.rs`, `list.rs`, `show.rs`, `search.rs`, `tag.rs`, `collections.rs`, `open.rs`, `reprocess.rs`)
+- Shared detail/update helper lives in `src/commands/bookmark_detail.rs` — canonical DB+bundle detail loading and typed update application used by both `show.rs` (CLI) and `native_host.rs` (extension). Do not duplicate detail assembly logic in command handlers
 - Command handlers return `Result<()>` — `main.rs` converts errors to stderr + non-zero exit
 - Save command (`commands/save.rs`) is the integration boundary for canonical → fetch → extract → bundle → DB; uses typed `SaveError`/`SaveOutcome`/`DedupResult` with two-stage canonical dedup (pre-fetch + post-fetch), three-way branching (new/unchanged/changed), merge semantics for user-owned fields, and partial-save semantics (bundle preserved if DB update fails)
 - Run checks: `cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test`
@@ -42,8 +43,10 @@
 - Native messaging client (`src/shared/native-messaging.ts`) owns `connectNative()`, FIFO response matching, reconnect policy, and connection status — no other module should touch the native port directly
 - Wire-contract types (`src/shared/types.ts`) mirror the Rust `native::messages` schema exactly (snake_case fields, same discriminator tags) — do not introduce camelCase alternatives
 - Popup owns toolbar action click (`_execute_action` command) — sidepanel open is additive via action-context menu item and named `open_side_panel` command. Do not use `openPanelOnActionClick` or it will regress the popup
-- Side panel (`src/sidepanel/`) uses list/detail view state without a router — `SidePanel.tsx` is the stateful container, `BookmarkList.tsx` and `BookmarkCard.tsx` are presentational
+- Side panel (`src/sidepanel/`) uses list/detail view state without a router — `SidePanel.tsx` is the stateful container, `BookmarkList.tsx`, `BookmarkCard.tsx`, `BookmarkDetail.tsx`, `TagManager.tsx`, and `EditableField.tsx` are presentational
 - Native list requests use a narrow `BookmarkSummary` DTO (DB-only, no bundle reads) — keep list payloads bounded and filter server-side
+- Native detail requests use a `BookmarkDetail` DTO (DB + bundle summary, no article body) — keep detail payloads bounded
+- Shared form controls (`src/shared/TagInput.tsx`, `src/shared/CollectionSelect.tsx`) are used by both popup and sidepanel — popup re-exports from shared. Do not copy form controls into sidepanel or popup; edit the shared originals
 - Test setup (`src/test/chrome-mock.ts`) provides lightweight Chrome API mocks for vitest — use `resetChromeMock()` in `beforeEach` and `createMockPort()` for port lifecycle tests
 
 ## CI

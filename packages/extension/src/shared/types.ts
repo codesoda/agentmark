@@ -35,7 +35,26 @@ export interface ListRequest {
   state?: BookmarkStateFilter;
 }
 
-export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest;
+export interface ShowRequest {
+  type: "show";
+  id: string;
+}
+
+export interface BookmarkChanges {
+  user_tags?: string[];
+  suggested_tags?: string[];
+  collections?: string[];
+  note?: string | null;
+  state?: BookmarkStateFilter;
+}
+
+export interface UpdateRequest {
+  type: "update";
+  id: string;
+  changes: BookmarkChanges;
+}
+
+export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest | ShowRequest | UpdateRequest;
 
 // --- Incoming responses (Native Host → Extension) ---
 
@@ -72,12 +91,36 @@ export interface ListResultResponse {
   bookmarks: BookmarkSummary[];
 }
 
+export interface BookmarkDetail {
+  id: string;
+  url: string;
+  title: string;
+  summary: string | null;
+  saved_at: string;
+  capture_source: string;
+  state: BookmarkStateFilter;
+  user_tags: string[];
+  suggested_tags: string[];
+  collections: string[];
+  note: string | null;
+}
+
+export interface ShowResultResponse {
+  type: "show_result";
+  bookmark: BookmarkDetail;
+}
+
+export interface UpdateResultResponse {
+  type: "update_result";
+  bookmark: BookmarkDetail;
+}
+
 export interface ErrorResponse {
   type: "error";
   message: string;
 }
 
-export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ErrorResponse;
+export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ShowResultResponse | UpdateResultResponse | ErrorResponse;
 
 // --- Connection status ---
 
@@ -85,7 +128,52 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 // --- Runtime parsing helpers ---
 
-const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "error"]);
+const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "show_result", "update_result", "error"]);
+
+function parseBookmarkDetail(raw: unknown, responseType: string): BookmarkDetail {
+  if (raw === null || raw === undefined || typeof raw !== "object") {
+    throw new Error(`${responseType} missing 'bookmark' object`);
+  }
+  const b = raw as Record<string, unknown>;
+  const validStates = new Set(["inbox", "processed", "archived"]);
+
+  if (typeof b.id !== "string" || typeof b.url !== "string" || typeof b.title !== "string" ||
+      typeof b.saved_at !== "string" || typeof b.capture_source !== "string" ||
+      typeof b.state !== "string" || !validStates.has(b.state) ||
+      !Array.isArray(b.user_tags) || !Array.isArray(b.suggested_tags) ||
+      !Array.isArray(b.collections)) {
+    throw new Error(`${responseType} bookmark has invalid or missing fields`);
+  }
+  if (!(b.user_tags as unknown[]).every((t) => typeof t === "string")) {
+    throw new Error(`${responseType} bookmark has non-string user_tags`);
+  }
+  if (!(b.suggested_tags as unknown[]).every((t) => typeof t === "string")) {
+    throw new Error(`${responseType} bookmark has non-string suggested_tags`);
+  }
+  if (!(b.collections as unknown[]).every((t) => typeof t === "string")) {
+    throw new Error(`${responseType} bookmark has non-string collections`);
+  }
+  if (b.summary !== null && b.summary !== undefined && typeof b.summary !== "string") {
+    throw new Error(`${responseType} bookmark has invalid summary`);
+  }
+  if (b.note !== null && b.note !== undefined && typeof b.note !== "string") {
+    throw new Error(`${responseType} bookmark has invalid note`);
+  }
+
+  return {
+    id: b.id as string,
+    url: b.url as string,
+    title: b.title as string,
+    summary: (b.summary as string | null) ?? null,
+    saved_at: b.saved_at as string,
+    capture_source: b.capture_source as string,
+    state: b.state as BookmarkStateFilter,
+    user_tags: b.user_tags as string[],
+    suggested_tags: b.suggested_tags as string[],
+    collections: b.collections as string[],
+    note: (b.note as string | null) ?? null,
+  };
+}
 
 export function parseNativeResponse(raw: unknown): NativeResponse {
   if (raw === null || raw === undefined || typeof raw !== "object") {
@@ -155,6 +243,11 @@ export function parseNativeResponse(raw: unknown): NativeResponse {
       });
       return { type: "list_result", bookmarks };
     }
+    case "show_result":
+    case "update_result": {
+      const bookmark = parseBookmarkDetail(obj.bookmark, obj.type as string);
+      return { type: obj.type as "show_result" | "update_result", bookmark } as NativeResponse;
+    }
     case "error": {
       if (typeof obj.message !== "string") {
         throw new Error("error response missing 'message' field");
@@ -197,7 +290,18 @@ export interface RuntimeListMessage {
   state?: BookmarkStateFilter;
 }
 
-export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage;
+export interface RuntimeShowMessage {
+  type: "show";
+  id: string;
+}
+
+export interface RuntimeUpdateMessage {
+  type: "update";
+  id: string;
+  changes: BookmarkChanges;
+}
+
+export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage | RuntimeShowMessage | RuntimeUpdateMessage;
 
 export interface RuntimeSuccessResponse {
   success: true;
