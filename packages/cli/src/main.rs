@@ -1,10 +1,13 @@
-mod cli;
-mod commands;
+use std::process;
 
+use agentmark::cli::Cli;
+use agentmark::commands;
 use clap::Parser;
-use cli::Cli;
 
 fn main() {
     let cli = Cli::parse();
-    commands::dispatch(cli.command);
+    if let Err(e) = commands::dispatch(cli.command) {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
 }

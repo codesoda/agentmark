@@ -1,12 +1,5 @@
+use agentmark::cli::{self, Cli};
 use clap::{CommandFactory, Parser};
-
-// Pull in the CLI types from the agentmark crate.
-// Since this is a binary crate, we test via the public modules.
-// We use `#[path]` to include the source directly for unit-level testing.
-#[path = "../src/cli.rs"]
-mod cli;
-
-use cli::Cli;
 
 // ── Clap graph integrity ────────────────────────────────────────────
 
@@ -100,6 +93,38 @@ fn save_help_contains_expected_flags() {
     );
 }
 
+#[test]
+fn save_parses_no_enrich() {
+    let cli =
+        Cli::try_parse_from(["agentmark", "save", "https://example.com", "--no-enrich"]).unwrap();
+    match cli.command {
+        cli::Commands::Save(args) => {
+            assert!(args.no_enrich);
+        }
+        _ => panic!("expected Save"),
+    }
+}
+
+#[test]
+fn save_no_enrich_defaults_to_false() {
+    let cli = Cli::try_parse_from(["agentmark", "save", "https://example.com"]).unwrap();
+    match cli.command {
+        cli::Commands::Save(args) => {
+            assert!(!args.no_enrich);
+        }
+        _ => panic!("expected Save"),
+    }
+}
+
+#[test]
+fn save_help_contains_no_enrich() {
+    let help = get_subcommand_help("save");
+    assert!(
+        help.contains("--no-enrich"),
+        "save help missing --no-enrich flag"
+    );
+}
+
 // ── List command ────────────────────────────────────────────────────
 
 #[test]
@@ -136,6 +161,45 @@ fn list_parses_filters() {
         }
         _ => panic!("expected List"),
     }
+}
+
+#[test]
+fn list_parses_state_filter() {
+    let cli = Cli::try_parse_from(["agentmark", "list", "--state", "processed"]).unwrap();
+    match cli.command {
+        cli::Commands::List(args) => {
+            assert_eq!(args.state, Some(cli::StateFilter::Processed));
+        }
+        _ => panic!("expected List"),
+    }
+}
+
+#[test]
+fn list_parses_all_states() {
+    for (input, expected) in [
+        ("inbox", cli::StateFilter::Inbox),
+        ("processed", cli::StateFilter::Processed),
+        ("archived", cli::StateFilter::Archived),
+    ] {
+        let cli = Cli::try_parse_from(["agentmark", "list", "--state", input]).unwrap();
+        match cli.command {
+            cli::Commands::List(args) => {
+                assert_eq!(args.state, Some(expected));
+            }
+            _ => panic!("expected List"),
+        }
+    }
+}
+
+#[test]
+fn list_rejects_invalid_state() {
+    assert!(Cli::try_parse_from(["agentmark", "list", "--state", "bogus"]).is_err());
+}
+
+#[test]
+fn list_help_contains_state_flag() {
+    let help = get_subcommand_help("list");
+    assert!(help.contains("--state"), "list help missing --state flag");
 }
 
 // ── Show command ────────────────────────────────────────────────────
@@ -224,6 +288,14 @@ fn tag_remove_requires_tags() {
     assert!(
         Cli::try_parse_from(["agentmark", "tag", "abc123", "--remove"]).is_err(),
         "tag --remove with no tags should fail"
+    );
+}
+
+#[test]
+fn tag_rejects_mixed_add_and_remove() {
+    assert!(
+        Cli::try_parse_from(["agentmark", "tag", "abc123", "rust", "--remove", "old-tag"]).is_err(),
+        "tag with both positional tags and --remove should fail"
     );
 }
 

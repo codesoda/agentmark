@@ -61,6 +61,10 @@ pub struct SaveArgs {
     /// Action intent for the bookmark
     #[arg(long)]
     pub action: Option<String>,
+
+    /// Skip enrichment even if enabled in config
+    #[arg(long)]
+    pub no_enrich: bool,
 }
 
 #[derive(clap::Args)]
@@ -73,9 +77,33 @@ pub struct ListArgs {
     #[arg(long)]
     pub tag: Option<String>,
 
+    /// Filter by state (inbox, processed, archived)
+    #[arg(long, value_parser = parse_state_filter)]
+    pub state: Option<StateFilter>,
+
     /// Maximum number of results
     #[arg(long, default_value = "20")]
     pub limit: u32,
+}
+
+/// CLI-local state filter enum — maps to `models::BookmarkState` without
+/// coupling Clap derives to shared model types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateFilter {
+    Inbox,
+    Processed,
+    Archived,
+}
+
+fn parse_state_filter(s: &str) -> Result<StateFilter, String> {
+    match s {
+        "inbox" => Ok(StateFilter::Inbox),
+        "processed" => Ok(StateFilter::Processed),
+        "archived" => Ok(StateFilter::Archived),
+        _ => Err(format!(
+            "invalid state '{s}': expected inbox, processed, or archived"
+        )),
+    }
 }
 
 #[derive(clap::Args)]
@@ -108,7 +136,7 @@ pub struct TagArgs {
     pub id: String,
 
     /// Tags to add
-    #[arg(required_unless_present = "remove")]
+    #[arg(required_unless_present = "remove", conflicts_with = "remove")]
     pub tags: Vec<String>,
 
     /// Tags to remove instead of add
