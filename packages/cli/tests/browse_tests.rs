@@ -6,13 +6,13 @@
 
 use assert_cmd::Command;
 use chrono::{TimeZone, Utc};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 use agentmark::bundle::{BodySections, Bundle};
 use agentmark::db::{self, BookmarkRepository};
 use agentmark::fetch::PageMetadata;
-use agentmark::models::{Bookmark, BookmarkState, ContentStatus, SummaryStatus};
+use agentmark::models::{Bookmark, BookmarkState};
 
 // ── Test infrastructure ─────────────────────────────────────────────
 
@@ -152,7 +152,7 @@ fn list_with_tag_filter_user_tags() {
     let mut bm1 = make_bookmark("am_01AAA", "https://a.com", "Rust Article", 1);
     bm1.user_tags = vec!["rust".to_string()];
     let bm2 = make_bookmark("am_02BBB", "https://b.com", "Python Article", 2);
-    bm2.user_tags.clone(); // no tags
+    let _ = &bm2; // no tags
     env.seed_bookmark(&bm1, "", None);
     env.seed_bookmark(&bm2, "", None);
 
