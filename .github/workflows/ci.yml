@@ -9,8 +9,22 @@ jobs:
   rust:
     name: Rust checks
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
+
+      # Build the extension first so include_dir! embeds real files
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/extension/package-lock.json
+
+      - name: Build extension
+        run: npm ci && npm run build
+        working-directory: packages/extension
 
       - uses: dtolnay/rust-toolchain@stable
         with:

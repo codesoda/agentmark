@@ -15,6 +15,7 @@ path = "src/main.rs"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 deunicode = "1"
+include_dir = "0.7"
 ego-tree = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 readability = { version = "0.3", default-features = false }

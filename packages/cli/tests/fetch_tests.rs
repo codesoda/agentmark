@@ -142,7 +142,7 @@ fn fetch_500_returns_http_status_error() {
 
 #[test]
 fn fetch_timeout_returns_timeout_error() {
-    let server = mockito::Server::new();
+    let _server = mockito::Server::new();
     // mockito doesn't directly support delays, but we can test by pointing at
     // a port where nothing is listening (connection refused is also a transport error).
     // Instead, test with invalid URL that will definitely timeout.

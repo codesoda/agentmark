@@ -11,7 +11,6 @@
 #
 # Options:
 #   --skip-init         Skip interactive first-time setup (agentmark init)
-#   --skip-extension    Skip extension build/install
 #   --extension-id ID   Chrome extension ID for native host registration
 #   --help, -h          Show this help message
 #
@@ -27,7 +26,6 @@ set -eu
 REPO_OWNER="codesoda"
 REPO_NAME="agentmark"
 REPO_REF="main"
-NATIVE_HOST_NAME="com.agentmark.native"
 
 # --- Color support ---
 
@@ -101,7 +99,6 @@ Usage:
 
 Options:
   --skip-init         Skip interactive first-time setup (agentmark init)
-  --skip-extension    Skip extension build/install
   --extension-id ID   Chrome extension ID for native host registration
   --help, -h          Show this help message
 
@@ -115,7 +112,6 @@ USAGE
 # --- Argument parsing ---
 
 SKIP_INIT=0
-SKIP_EXTENSION=0
 EXTENSION_ID="${AGENTMARK_EXTENSION_ID:-}"
 
 parse_args() {
@@ -123,9 +119,6 @@ parse_args() {
         case "$1" in
             --skip-init)
                 SKIP_INIT=1
-                ;;
-            --skip-extension)
-                SKIP_EXTENSION=1
                 ;;
             --extension-id)
                 if [ $# -lt 2 ]; then
@@ -163,7 +156,6 @@ trap cleanup EXIT INT TERM
 SOURCE_ROOT=""
 BUILT_BINARY=""
 INSTALLED_BINARY=""
-EXT_INSTALL_DIR=""
 
 # --- Source resolution ---
 
@@ -203,16 +195,6 @@ ensure_prereqs() {
         die "cargo is required (install Rust: https://rustup.rs)"
     fi
     ok "cargo found"
-
-    if [ "$SKIP_EXTENSION" = 0 ]; then
-        if ! command -v node >/dev/null 2>&1; then
-            die "node is required for extension build (install Node.js: https://nodejs.org)"
-        fi
-        if ! command -v npm >/dev/null 2>&1; then
-            die "npm is required for extension build"
-        fi
-        ok "node/npm found"
-    fi
 }
 
 # --- Build CLI ---
@@ -291,103 +273,23 @@ ensure_local_bin_symlink() {
     return 0
 }
 
-# --- Build extension ---
+# --- Install extension (delegated to CLI) ---
 
-build_extension() {
-    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
-    EXT_INSTALL_DIR="$agentmark_home/extension"
+install_extension_via_cli() {
+    header "Installing extension"
 
-    header "Building extension"
-
-    ext_src="$SOURCE_ROOT/packages/extension"
-    if [ ! -f "$ext_src/package.json" ]; then
-        die "Extension source not found at $ext_src"
-    fi
-
-    if ! (cd "$ext_src" && npm ci); then
-        die "npm ci failed in $ext_src"
-    fi
-
-    if ! (cd "$ext_src" && npm run build); then
-        die "npm run build failed in $ext_src"
-    fi
-
-    if [ ! -d "$ext_src/dist" ]; then
-        die "Extension build succeeded but dist/ not found"
-    fi
-
-    # Copy to durable install location
-    if [ -e "$EXT_INSTALL_DIR" ] && [ ! -d "$EXT_INSTALL_DIR" ]; then
-        die "$EXT_INSTALL_DIR exists but is not a directory"
-    fi
-
-    rm -rf "$EXT_INSTALL_DIR"
-    mkdir -p "$EXT_INSTALL_DIR"
-    cp -R "$ext_src/dist/." "$EXT_INSTALL_DIR/"
-
-    ok_detail "Extension installed" "$EXT_INSTALL_DIR"
-}
-
-# --- Native host manifest ---
-
-write_native_host_manifest() {
-    header "Registering native messaging host"
-
-    # Determine host directory based on OS
-    case "$(uname -s)" in
-        Darwin)
-            host_dir="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
-            ;;
-        Linux)
-            host_dir="$HOME/.config/google-chrome/NativeMessagingHosts"
-            ;;
-        *)
-            warn "Unsupported OS for native host registration — skipping"
-            return 1
-            ;;
-    esac
-
-    manifest_path="$host_dir/$NATIVE_HOST_NAME.json"
-
-    if [ -e "$host_dir" ] && [ ! -d "$host_dir" ]; then
-        die "$host_dir exists but is not a directory"
-    fi
-
-    mkdir -p "$host_dir"
-
-    # Validate extension ID format (32 lowercase alpha chars)
+    ext_args=""
     if [ -n "$EXTENSION_ID" ]; then
-        case "$EXTENSION_ID" in
-            *[!abcdefghijklmnopqrstuvwxyz]*)
-                die "Invalid extension ID '$EXTENSION_ID' — must be 32 lowercase letters (found at chrome://extensions)"
-                ;;
-        esac
-        id_len=$(printf '%s' "$EXTENSION_ID" | wc -c | tr -d ' ')
-        if [ "$id_len" != "32" ]; then
-            die "Invalid extension ID '$EXTENSION_ID' — must be exactly 32 characters (got $id_len)"
-        fi
+        ext_args="--extension-id $EXTENSION_ID"
     fi
 
-    if [ -z "$EXTENSION_ID" ]; then
-        warn "No extension ID provided — native host manifest not written"
-        dim "  After loading the extension in Chrome, find its ID at chrome://extensions"
-        dim "  Then rerun: curl -sSL https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_REF/install.sh | bash -s -- --extension-id YOUR_EXTENSION_ID --skip-init --skip-extension"
+    # shellcheck disable=SC2086
+    if "$INSTALLED_BINARY" install-extension $ext_args; then
+        return 0
+    else
+        warn "Extension installation had issues"
         return 1
     fi
-
-    # Write manifest deterministically
-    cat > "$manifest_path" <<MANIFEST_EOF
-{
-  "name": "$NATIVE_HOST_NAME",
-  "description": "AgentMark native messaging host",
-  "path": "$INSTALLED_BINARY",
-  "type": "stdio",
-  "allowed_origins": ["chrome-extension://$EXTENSION_ID/"]
-}
-MANIFEST_EOF
-
-    ok_detail "Native host registered" "$manifest_path"
-    return 0
 }
 
 # --- Skill installation ---
@@ -427,24 +329,20 @@ run_first_time_setup() {
 # --- Summary ---
 
 print_summary() {
-    host_registered="$1"
+    ext_installed="$1"
     skill_installed="$2"
     init_ran="$3"
+
+    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
 
     header "Summary"
 
     ok_detail "CLI binary" "$INSTALLED_BINARY"
 
-    if [ -n "$EXT_INSTALL_DIR" ]; then
-        ok_detail "Extension" "$EXT_INSTALL_DIR"
+    if [ "$ext_installed" = 1 ]; then
+        ok_detail "Extension" "$agentmark_home/extension"
     else
-        dim "  Extension: skipped"
-    fi
-
-    if [ "$host_registered" = 1 ]; then
-        ok "Native messaging host registered"
-    else
-        warn "Native messaging host not registered (rerun with --extension-id)"
+        warn "Extension not installed"
     fi
 
     if [ "$skill_installed" = 1 ]; then
@@ -462,21 +360,6 @@ print_summary() {
     fi
 
     printf '\n'
-
-    if [ -n "$EXT_INSTALL_DIR" ] && [ "$host_registered" != 1 ]; then
-        info "Next steps:"
-        dim "  1. Open Chrome and go to chrome://extensions"
-        dim "  2. Enable Developer mode and click 'Load unpacked'"
-        dim "  3. Select: $EXT_INSTALL_DIR"
-        dim "  4. Copy the extension ID shown on the card"
-        dim "  5. Rerun: curl -sSL https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_REF/install.sh | bash -s -- --extension-id YOUR_ID --skip-init --skip-extension"
-        printf '\n'
-    elif [ -n "$EXT_INSTALL_DIR" ]; then
-        info "Extension ready:"
-        dim "  Load unpacked from: $EXT_INSTALL_DIR"
-        printf '\n'
-    fi
-
     printf '%b%b  Done!%b\n\n' "$C_BOLD" "$C_OK" "$C_RESET"
 }
 
@@ -506,26 +389,19 @@ main() {
     # Step 5: Symlink
     ensure_local_bin_symlink || true
 
-    # Step 6: Build extension
-    if [ "$SKIP_EXTENSION" = 0 ]; then
-        build_extension
-    else
-        dim "Skipping extension build (--skip-extension)"
+    # Step 6: Install extension (embedded in CLI binary) + native host
+    ext_installed=0
+    if install_extension_via_cli; then
+        ext_installed=1
     fi
 
-    # Step 7: Native host manifest
-    host_registered=0
-    if write_native_host_manifest; then
-        host_registered=1
-    fi
-
-    # Step 8: Skill installation
+    # Step 7: Skill installation
     skill_installed=0
     if install_skill; then
         skill_installed=1
     fi
 
-    # Step 9: First-time setup
+    # Step 8: First-time setup
     init_ran=0
     if [ "$SKIP_INIT" = 0 ]; then
         if run_first_time_setup; then
@@ -535,8 +411,8 @@ main() {
         dim "Skipping init (--skip-init)"
     fi
 
-    # Step 10: Summary
-    print_summary "$host_registered" "$skill_installed" "$init_ran"
+    # Step 9: Summary
+    print_summary "$ext_installed" "$skill_installed" "$init_ran"
 }
 
 main "$@"
