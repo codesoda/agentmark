@@ -54,11 +54,10 @@ Each release includes:
 
 | Artifact | Description |
 |---|---|
-| `agentmark-vX.Y.Z-x86_64-apple-darwin.tar.gz` | macOS Intel |
 | `agentmark-vX.Y.Z-aarch64-apple-darwin.tar.gz` | macOS Apple Silicon |
-| `agentmark-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 |
-| `agentmark-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 |
 | `checksums-sha256.txt` | SHA-256 checksums for all archives |
+
+Additional targets (macOS Intel, Linux) can be added to the matrix in `.github/workflows/release.yml` when needed.
 
 Each archive contains a single `agentmark` binary with the Chrome extension embedded.
 
