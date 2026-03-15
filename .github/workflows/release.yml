@@ -12,8 +12,35 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  check:
+    name: CI checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/extension/package-lock.json
+
+      - name: Extension checks
+        run: npm ci && npm run typecheck && npm run build && npm run lint && npm run test
+        working-directory: packages/extension
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rust checks
+        run: cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test
+
   build:
     name: Build ${{ matrix.target }}
+    needs: check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
