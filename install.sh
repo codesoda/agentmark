@@ -384,12 +384,19 @@ install_skill() {
         return 0
     fi
 
-    # For release installs, download the skill installer
+    # For release installs, download skill files to a temp dir and run installer
     if command -v curl >/dev/null 2>&1; then
-        skill_url="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_REF/packages/skill/install-skill.sh"
-        if curl -sSL "$skill_url" | sh; then
-            ok "Agent skill installed"
-            return 0
+        skill_tmp="${TMP_DIR:-$(mktemp -d)}/skill"
+        mkdir -p "$skill_tmp"
+        base_url="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_REF/packages/skill"
+
+        if curl -sSL --fail -o "$skill_tmp/SKILL.md" "$base_url/SKILL.md" && \
+           curl -sSL --fail -o "$skill_tmp/agentmark.md" "$base_url/agentmark.md" && \
+           curl -sSL --fail -o "$skill_tmp/install-skill.sh" "$base_url/install-skill.sh"; then
+            if sh "$skill_tmp/install-skill.sh"; then
+                ok "Agent skill installed"
+                return 0
+            fi
         fi
     fi
 
@@ -401,6 +408,13 @@ install_skill() {
 
 run_first_time_setup() {
     header "First-time setup"
+
+    # init requires interactive stdin for prompts — skip when piped (curl | bash)
+    if [ ! -t 0 ]; then
+        dim "  Non-interactive shell detected — skipping init"
+        dim "  Run 'agentmark init' manually when ready"
+        return 1
+    fi
 
     if ! "$INSTALLED_BINARY" init; then
         warn "agentmark init did not complete — you can run it later"

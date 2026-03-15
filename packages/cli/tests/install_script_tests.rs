@@ -184,9 +184,6 @@ impl InstallerResult {
         fs::read_to_string(&self.init_log).unwrap_or_default()
     }
 
-    fn init_was_called(&self) -> bool {
-        self.init_log_contents().contains("init")
-    }
 }
 
 fn set_executable(path: &Path) {
@@ -382,14 +379,26 @@ fn delegates_skill_installation() {
 }
 
 #[test]
-fn runs_init_when_not_skipped() {
+fn skips_init_in_non_interactive_mode() {
+    // When stdin is not a TTY (as in test/CI/curl|bash), init is skipped
     let fixture = TestFixture::new();
     let result = fixture.run_installer(&[]);
 
     assert!(result.success(), "Installer failed:\n{}", result.stdout());
+
+    let has_bare_init = result.init_log_contents().lines().any(|line| {
+        let args = line.trim_start_matches("agentmark-fake ");
+        args == "init" || args.starts_with("init ")
+    });
     assert!(
-        result.init_was_called(),
-        "Init should have been called via the installed binary"
+        !has_bare_init,
+        "Init should be skipped in non-interactive mode"
+    );
+
+    let stdout = result.stdout();
+    assert!(
+        stdout.contains("Non-interactive") || stdout.contains("non-interactive"),
+        "Should mention non-interactive skip, got:\n{stdout}"
     );
 }
 
