@@ -355,6 +355,19 @@ write_native_host_manifest() {
 
     mkdir -p "$host_dir"
 
+    # Validate extension ID format (32 lowercase alpha chars)
+    if [ -n "$EXTENSION_ID" ]; then
+        case "$EXTENSION_ID" in
+            *[!abcdefghijklmnopqrstuvwxyz]*)
+                die "Invalid extension ID '$EXTENSION_ID' — must be 32 lowercase letters (found at chrome://extensions)"
+                ;;
+        esac
+        id_len=$(printf '%s' "$EXTENSION_ID" | wc -c | tr -d ' ')
+        if [ "$id_len" != "32" ]; then
+            die "Invalid extension ID '$EXTENSION_ID' — must be exactly 32 characters (got $id_len)"
+        fi
+    fi
+
     if [ -z "$EXTENSION_ID" ]; then
         warn "No extension ID provided — native host manifest not written"
         dim "  After loading the extension in Chrome, find its ID at chrome://extensions"

@@ -212,6 +212,12 @@ impl InstallerResult {
         self.home.join(".agentmark/extension")
     }
 
+    /// Returns the expected native host manifest path.
+    ///
+    /// Uses compile-time `cfg!(target_os)` which must stay in sync with
+    /// `install.sh`'s runtime `uname -s` branching. If a new OS is added,
+    /// both this function and the `case "$(uname -s)"` block in install.sh
+    /// must be updated together.
     fn native_host_manifest(&self) -> PathBuf {
         if cfg!(target_os = "macos") {
             self.home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts/com.agentmark.native.json")
@@ -244,6 +250,8 @@ fn set_executable(path: &Path) {
 #[test]
 fn install_script_has_valid_shell_syntax() {
     let script = install_script_path();
+
+    // Check with bash -n (catches general syntax errors)
     let output = Command::new("bash")
         .arg("-n")
         .arg(&script)
@@ -251,7 +259,21 @@ fn install_script_has_valid_shell_syntax() {
         .expect("bash should be available");
     assert!(
         output.status.success(),
-        "install.sh has syntax errors:\n{}",
+        "install.sh has syntax errors (bash -n):\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Also check with sh -n to match the #!/bin/sh shebang.
+    // On Ubuntu CI, /bin/sh is dash which is stricter than bash —
+    // this catches accidental bashisms that bash -n would accept.
+    let output = Command::new("sh")
+        .arg("-n")
+        .arg(&script)
+        .output()
+        .expect("sh should be available");
+    assert!(
+        output.status.success(),
+        "install.sh has syntax errors (sh -n):\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -270,6 +292,7 @@ fn install_script_passes_shellcheck() {
 
     let script = install_script_path();
     let output = Command::new("shellcheck")
+        .arg("--shell=sh")
         .arg(&script)
         .output()
         .expect("shellcheck should execute");
@@ -459,7 +482,7 @@ fn idempotent_rerun() {
         "--skip-init",
         "--skip-extension",
         "--extension-id",
-        "testextensionid",
+        "abcdefghijklmnopabcdefghijklmnop",
     ]);
     assert!(result1.success(), "First run failed:\n{}", result1.stdout());
 
@@ -468,7 +491,7 @@ fn idempotent_rerun() {
         "--skip-init",
         "--skip-extension",
         "--extension-id",
-        "testextensionid",
+        "abcdefghijklmnopabcdefghijklmnop",
     ]);
     assert!(
         result2.success(),
@@ -634,7 +657,7 @@ fn extension_id_via_env_var() {
     cmd.arg("--skip-extension");
     cmd.env("HOME", &home);
     cmd.env("PATH", format!("{}:/usr/bin:/bin", shims.display()));
-    cmd.env("AGENTMARK_EXTENSION_ID", "envvarextensionid");
+    cmd.env("AGENTMARK_EXTENSION_ID", "mmmmnnnnooooppppqqqqrrrrsssstttt");
     cmd.env("NO_COLOR", "1");
     cmd.env("AGENTMARK_SHARED_SKILLS_DIR", home.join(".agents/skills"));
     cmd.env("CLAUDE_SKILLS_DIR", home.join(".claude/skills"));
@@ -655,7 +678,7 @@ fn extension_id_via_env_var() {
         serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
     assert_eq!(
         manifest["allowed_origins"][0],
-        "chrome-extension://envvarextensionid/"
+        "chrome-extension://mmmmnnnnooooppppqqqqrrrrsssstttt/"
     );
 }
 
@@ -710,6 +733,48 @@ fn unknown_option_fails() {
     assert!(
         stderr.contains("Unknown option"),
         "Error should mention unknown option, got: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_extension_id_too_short_fails() {
+    let fixture = TestFixture::new();
+    let result = fixture.run_installer(&[
+        "--skip-init",
+        "--skip-extension",
+        "--extension-id",
+        "tooshort",
+    ]);
+
+    assert!(
+        !result.success(),
+        "Installer should fail with invalid extension ID"
+    );
+    let stderr = result.stderr();
+    assert!(
+        stderr.contains("Invalid extension ID"),
+        "Error should mention invalid ID, got: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_extension_id_non_alpha_fails() {
+    let fixture = TestFixture::new();
+    let result = fixture.run_installer(&[
+        "--skip-init",
+        "--skip-extension",
+        "--extension-id",
+        "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP",
+    ]);
+
+    assert!(
+        !result.success(),
+        "Installer should fail with uppercase extension ID"
+    );
+    let stderr = result.stderr();
+    assert!(
+        stderr.contains("Invalid extension ID"),
+        "Error should mention invalid ID, got: {stderr}"
     );
 }
 
@@ -837,7 +902,7 @@ fn manifest_rewrite_with_new_extension_id() {
         "--skip-init",
         "--skip-extension",
         "--extension-id",
-        "firstid",
+        "aaaabbbbccccddddeeeeffffgggghhhh",
     ]);
     assert!(result1.success());
 
@@ -845,7 +910,7 @@ fn manifest_rewrite_with_new_extension_id() {
         serde_json::from_str(&fs::read_to_string(result1.native_host_manifest()).unwrap()).unwrap();
     assert_eq!(
         manifest1["allowed_origins"][0],
-        "chrome-extension://firstid/"
+        "chrome-extension://aaaabbbbccccddddeeeeffffgggghhhh/"
     );
 
     // Second run with different ID
@@ -853,7 +918,7 @@ fn manifest_rewrite_with_new_extension_id() {
         "--skip-init",
         "--skip-extension",
         "--extension-id",
-        "secondid",
+        "iiiiiiiiijjjjjjjjjkkkkkkkkklllll",
     ]);
     assert!(result2.success());
 
@@ -861,6 +926,6 @@ fn manifest_rewrite_with_new_extension_id() {
         serde_json::from_str(&fs::read_to_string(result2.native_host_manifest()).unwrap()).unwrap();
     assert_eq!(
         manifest2["allowed_origins"][0],
-        "chrome-extension://secondid/"
+        "chrome-extension://iiiiiiiiijjjjjjjjjkkkkkkkkklllll/"
     );
 }
