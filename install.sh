@@ -1,16 +1,17 @@
 #!/bin/sh
 # install.sh — AgentMark installer.
 #
-# Builds the CLI from source, installs the binary, registers the Chrome
-# native messaging host, builds/installs the extension, installs the
-# cross-agent skill, and runs first-time setup.
+# Downloads a pre-built binary from GitHub Releases (or builds from source
+# when run from a repo checkout), installs it, extracts the embedded Chrome
+# extension, installs the cross-agent skill, and runs first-time setup.
 #
 # Usage:
-#   ./install.sh [options]
 #   curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash
+#   ./install.sh [options]       # from a repo checkout — builds from source
 #
 # Options:
 #   --skip-init         Skip interactive first-time setup (agentmark init)
+#   --from-source       Force build from source even when a release exists
 #   --extension-id ID   Chrome extension ID for native host registration
 #   --help, -h          Show this help message
 #
@@ -94,11 +95,12 @@ usage() {
 AgentMark Installer
 
 Usage:
-  ./install.sh [options]
   curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash
+  ./install.sh [options]
 
 Options:
   --skip-init         Skip interactive first-time setup (agentmark init)
+  --from-source       Force build from source even when a release exists
   --extension-id ID   Chrome extension ID for native host registration
   --help, -h          Show this help message
 
@@ -112,6 +114,7 @@ USAGE
 # --- Argument parsing ---
 
 SKIP_INIT=0
+FROM_SOURCE=0
 EXTENSION_ID="${AGENTMARK_EXTENSION_ID:-}"
 
 parse_args() {
@@ -119,6 +122,9 @@ parse_args() {
         case "$1" in
             --skip-init)
                 SKIP_INIT=1
+                ;;
+            --from-source)
+                FROM_SOURCE=1
                 ;;
             --extension-id)
                 if [ $# -lt 2 ]; then
@@ -153,11 +159,95 @@ trap cleanup EXIT INT TERM
 
 # --- Global result variables (set by functions, read by main) ---
 
-SOURCE_ROOT=""
-BUILT_BINARY=""
 INSTALLED_BINARY=""
+SOURCE_ROOT=""
 
-# --- Source resolution ---
+# --- Platform detection ---
+
+detect_target() {
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    case "$os" in
+        Darwin)
+            case "$arch" in
+                arm64)  echo "aarch64-apple-darwin" ;;
+                x86_64) echo "x86_64-apple-darwin" ;;
+                *)      echo "" ;;
+            esac
+            ;;
+        Linux)
+            case "$arch" in
+                x86_64)  echo "x86_64-unknown-linux-gnu" ;;
+                aarch64) echo "aarch64-unknown-linux-gnu" ;;
+                *)       echo "" ;;
+            esac
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# --- Download pre-built binary from GitHub Releases ---
+
+download_release() {
+    header "Downloading pre-built binary"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        die "curl is required for downloading releases"
+    fi
+
+    target="$(detect_target)"
+    if [ -z "$target" ]; then
+        die "No pre-built binary available for $(uname -s) $(uname -m). Use --from-source to build locally."
+    fi
+
+    # Get the latest release tag
+    tag="$(curl -sSL "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" \
+        | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+
+    if [ -z "$tag" ]; then
+        die "Could not determine latest release. Use --from-source to build locally."
+    fi
+
+    info "Latest release: $tag"
+
+    TMP_DIR="$(mktemp -d)"
+    archive_name="agentmark-${tag}-${target}.tar.gz"
+    download_url="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/${tag}/${archive_name}"
+
+    dim "Downloading $archive_name..."
+    if ! curl -sSL --fail -o "$TMP_DIR/$archive_name" "$download_url"; then
+        die "Failed to download $download_url — no binary for this platform in release $tag. Use --from-source to build locally."
+    fi
+
+    tar xzf "$TMP_DIR/$archive_name" -C "$TMP_DIR"
+
+    extracted_binary="$TMP_DIR/agentmark-${tag}-${target}/agentmark"
+    if [ ! -f "$extracted_binary" ]; then
+        die "Archive did not contain expected binary"
+    fi
+
+    ok_detail "Downloaded" "$tag ($target)"
+
+    # Install to ~/.agentmark/bin
+    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
+    bin_dir="$agentmark_home/bin"
+
+    if [ -e "$bin_dir" ] && [ ! -d "$bin_dir" ]; then
+        die "$bin_dir exists but is not a directory"
+    fi
+
+    mkdir -p "$bin_dir"
+    cp "$extracted_binary" "$bin_dir/agentmark"
+    chmod +x "$bin_dir/agentmark"
+
+    INSTALLED_BINARY="$bin_dir/agentmark"
+    ok_detail "Binary installed" "$INSTALLED_BINARY"
+}
+
+# --- Source build path (repo checkout or --from-source) ---
 
 resolve_source_root() {
     # If invoked from a repo checkout, use it directly
@@ -167,9 +257,9 @@ resolve_source_root() {
         return 0
     fi
 
-    # Bootstrap mode: download source archive
+    # Download source archive
     if ! command -v curl >/dev/null 2>&1; then
-        die "curl is required for bootstrap install (no local source tree found)"
+        die "curl is required for source install"
     fi
 
     info "Downloading source from GitHub..."
@@ -188,48 +278,38 @@ resolve_source_root() {
     SOURCE_ROOT="$extracted"
 }
 
-# --- Prerequisite checks ---
+build_from_source() {
+    resolve_source_root
+    ok_detail "Source tree" "$SOURCE_ROOT"
 
-ensure_prereqs() {
+    header "Checking prerequisites"
     if ! command -v cargo >/dev/null 2>&1; then
-        die "cargo is required (install Rust: https://rustup.rs)"
+        die "cargo is required for source builds (install Rust: https://rustup.rs)"
     fi
     ok "cargo found"
-}
 
-# --- Build CLI ---
-
-build_cli() {
     header "Building CLI"
-
     if ! (cd "$SOURCE_ROOT" && cargo build --release -p agentmark); then
         die "cargo build failed"
     fi
 
-    BUILT_BINARY="$SOURCE_ROOT/target/release/agentmark"
-    if [ ! -f "$BUILT_BINARY" ]; then
-        die "Build succeeded but binary not found at $BUILT_BINARY"
+    built_binary="$SOURCE_ROOT/target/release/agentmark"
+    if [ ! -f "$built_binary" ]; then
+        die "Build succeeded but binary not found at $built_binary"
     fi
 
-    ok_detail "CLI built" "$BUILT_BINARY"
-}
+    ok_detail "CLI built" "$built_binary"
 
-# --- Install binary ---
-
-install_binary() {
+    # Install to ~/.agentmark/bin
     agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
     bin_dir="$agentmark_home/bin"
 
-    header "Installing binary"
-
-    # Ensure bin dir exists and is a directory
     if [ -e "$bin_dir" ] && [ ! -d "$bin_dir" ]; then
         die "$bin_dir exists but is not a directory"
     fi
 
     mkdir -p "$bin_dir"
-
-    cp "$BUILT_BINARY" "$bin_dir/agentmark"
+    cp "$built_binary" "$bin_dir/agentmark"
     chmod +x "$bin_dir/agentmark"
 
     INSTALLED_BINARY="$bin_dir/agentmark"
@@ -242,7 +322,6 @@ ensure_local_bin_symlink() {
     local_bin="${AGENTMARK_LOCAL_BIN:-$HOME/.local/bin}"
     symlink_path="$local_bin/agentmark"
 
-    # Create ~/.local/bin if it doesn't exist
     if [ -e "$local_bin" ] && [ ! -d "$local_bin" ]; then
         warn "$local_bin exists but is not a directory — skipping symlink"
         return 1
@@ -250,7 +329,6 @@ ensure_local_bin_symlink() {
 
     mkdir -p "$local_bin"
 
-    # Handle existing target
     if [ -L "$symlink_path" ]; then
         rm "$symlink_path"
     elif [ -e "$symlink_path" ]; then
@@ -261,7 +339,6 @@ ensure_local_bin_symlink() {
     ln -s "$INSTALLED_BINARY" "$symlink_path"
     ok_detail "Symlinked" "$symlink_path -> $INSTALLED_BINARY"
 
-    # Check if local bin is on PATH
     case ":${PATH}:" in
         *":${local_bin}:"*)
             ;;
@@ -297,19 +374,27 @@ install_extension_via_cli() {
 install_skill() {
     header "Installing agent skill"
 
-    skill_installer="$SOURCE_ROOT/packages/skill/install-skill.sh"
-    if [ ! -f "$skill_installer" ]; then
-        warn "Skill installer not found at $skill_installer — skipping"
-        return 1
+    # If we have a source tree, use the skill installer from it
+    if [ -n "$SOURCE_ROOT" ] && [ -f "$SOURCE_ROOT/packages/skill/install-skill.sh" ]; then
+        if ! sh "$SOURCE_ROOT/packages/skill/install-skill.sh"; then
+            warn "Skill installation failed — other components still installed"
+            return 1
+        fi
+        ok "Agent skill installed"
+        return 0
     fi
 
-    if ! sh "$skill_installer"; then
-        warn "Skill installation failed — other components still installed"
-        return 1
+    # For release installs, download the skill installer
+    if command -v curl >/dev/null 2>&1; then
+        skill_url="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_REF/packages/skill/install-skill.sh"
+        if curl -sSL "$skill_url" | sh; then
+            ok "Agent skill installed"
+            return 0
+        fi
     fi
 
-    ok "Agent skill installed"
-    return 0
+    warn "Skill installation skipped — install manually from the repo"
+    return 1
 }
 
 # --- First-time setup ---
@@ -372,36 +457,33 @@ main() {
     dim "━━━━━━━━━━━━━━━━━━━"
     printf '\n'
 
-    # Step 1: Resolve source
-    resolve_source_root
-    ok_detail "Source tree" "$SOURCE_ROOT"
+    # Determine install mode:
+    # - From a repo checkout → build from source
+    # - --from-source flag → build from source
+    # - Otherwise → download pre-built release
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    if [ "$FROM_SOURCE" = 1 ] || { [ -f "$script_dir/Cargo.toml" ] && [ -d "$script_dir/packages/cli" ]; }; then
+        build_from_source
+    else
+        download_release
+    fi
 
-    # Step 2: Check prerequisites
-    header "Checking prerequisites"
-    ensure_prereqs
-
-    # Step 3: Build CLI
-    build_cli
-
-    # Step 4: Install binary
-    install_binary
-
-    # Step 5: Symlink
+    # Symlink
     ensure_local_bin_symlink || true
 
-    # Step 6: Install extension (embedded in CLI binary) + native host
+    # Install extension (embedded in CLI binary) + native host
     ext_installed=0
     if install_extension_via_cli; then
         ext_installed=1
     fi
 
-    # Step 7: Skill installation
+    # Skill installation
     skill_installed=0
     if install_skill; then
         skill_installed=1
     fi
 
-    # Step 8: First-time setup
+    # First-time setup
     init_ran=0
     if [ "$SKIP_INIT" = 0 ]; then
         if run_first_time_setup; then
@@ -411,7 +493,7 @@ main() {
         dim "Skipping init (--skip-init)"
     fi
 
-    # Step 9: Summary
+    # Summary
     print_summary "$ext_installed" "$skill_installed" "$init_ran"
 }
 
