@@ -76,6 +76,11 @@ fn validate_extension_id(id: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Returns the native messaging host directory for the current OS.
+///
+/// Uses compile-time `cfg!(target_os)` — the binary must be compiled on
+/// (or for) the same OS it will run on. The release workflow builds macOS
+/// targets on macOS runners and Linux targets on Linux runners, so this
+/// is correct. If cross-compilation changes, this must be revisited.
 fn native_host_dir(home: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if cfg!(target_os = "macos") {
         Ok(home.join("Library/Application Support/Google/Chrome/NativeMessagingHosts"))

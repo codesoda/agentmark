@@ -12,34 +12,17 @@ static EXTENSION_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../extension/dist"
 
 /// Returns true if the build embedded a non-empty extension directory.
 pub fn is_embedded() -> bool {
-    // Check for at least one file (not just empty dirs)
-    EXTENSION_DIR.files().next().is_some()
-        || EXTENSION_DIR.dirs().any(|d| d.files().next().is_some())
+    !EXTENSION_DIR.entries().is_empty()
 }
 
 /// Extract all embedded extension files to the target directory.
 ///
-/// Creates the target directory if it doesn't exist. Overwrites existing files.
+/// Creates the target directory if it doesn't exist.
+/// Uses `include_dir`'s built-in `Dir::extract()` which handles nested
+/// paths correctly (file paths are relative to the embedded root).
 pub fn extract_to(target: &Path) -> std::io::Result<()> {
-    extract_dir(&EXTENSION_DIR, target)
-}
-
-fn extract_dir(dir: &Dir, target: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(target)?;
-
-    for file in dir.files() {
-        let dest = target.join(file.path());
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&dest, file.contents())?;
-    }
-
-    for subdir in dir.dirs() {
-        extract_dir(subdir, target)?;
-    }
-
-    Ok(())
+    EXTENSION_DIR.extract(target)
 }
 
 #[cfg(test)]

@@ -5,5 +5,11 @@ fn main() {
     if !dist.exists() {
         std::fs::create_dir_all(dist).ok();
     }
-    println!("cargo:rerun-if-changed=../extension/dist");
+
+    // Track manifest.json as a sentinel — a directory-level rerun-if-changed
+    // only fires on directory creation/deletion, not when files inside change.
+    // manifest.json is always present after an extension build and its content
+    // is stable, so Vite hash-named assets trigger a rebuild via the directory
+    // change when new files appear.
+    println!("cargo:rerun-if-changed=../extension/dist/manifest.json");
 }
