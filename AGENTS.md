@@ -9,7 +9,8 @@
 ## Rust CLI
 
 - Workspace root `Cargo.toml` with single member `packages/cli`
-- Lib/bin split: `src/lib.rs` exposes `agent`, `bundle`, `canonical`, `cli`, `commands`, `config`, `db`, `display`, `enrich`, `extract`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
+- Lib/bin split: `src/lib.rs` exposes `agent`, `bundle`, `canonical`, `cli`, `commands`, `config`, `db`, `display`, `enrich`, `extension`, `extract`, `fetch`, `models` modules; `src/main.rs` is a thin wrapper
+- Extension embedding: `src/extension.rs` uses `include_dir!` to embed the pre-built Chrome extension `dist/` at compile time. `build.rs` ensures the `dist/` directory exists (creating an empty placeholder if needed) so compilation succeeds even without a prior extension build. The `install-extension` command extracts embedded files and registers the native messaging host
 - Agent layer lives in `src/agent/` (`mod.rs`, `provider.rs`, `prompt.rs`, `claude.rs`, `codex.rs`) — LLM provider abstraction for enrichment via local CLI subprocesses. Uses an injected `ProcessRunner` trait for testable subprocess invocation. Providers are selected by `create_provider()` factory based on `config.default_agent`. Tests use mock runners rather than real CLIs or PATH mutation
 - Canonical layer lives in `src/canonical.rs` — pure URL normalization (strip tracking params, normalize host/scheme/slashes, sort query params), depends only on `url` crate
 - Domain model types live in `src/models/` (`bookmark.rs`, `event.rs`) — pure data + serde, no I/O or config coupling
@@ -20,7 +21,7 @@
 - Fetch layer lives in `src/fetch/` (`mod.rs`, `metadata.rs`) — HTTP fetch + metadata extraction, depends only on reqwest/scraper/url
 - Config lives at `~/.agentmark/config.toml`, index DB at `~/.agentmark/index.db`
 - DB layer accepts explicit paths/connections; `config.rs` remains the only HOME-aware module
-- Commands are in `src/commands/` module tree (`init.rs`, `save.rs`, `list.rs`, `show.rs`, `search.rs`, `tag.rs`, `collections.rs`, `open.rs`, `reprocess.rs`)
+- Commands are in `src/commands/` module tree (`init.rs`, `save.rs`, `list.rs`, `show.rs`, `search.rs`, `tag.rs`, `collections.rs`, `open.rs`, `reprocess.rs`, `install_extension.rs`)
 - Shared detail/update helper lives in `src/commands/bookmark_detail.rs` — canonical DB+bundle detail loading and typed update application used by both `show.rs` (CLI) and `native_host.rs` (extension). Do not duplicate detail assembly logic in command handlers
 - Command handlers return `Result<()>` — `main.rs` converts errors to stderr + non-zero exit
 - Save command (`commands/save.rs`) is the integration boundary for canonical → fetch → extract → bundle → DB; uses typed `SaveError`/`SaveOutcome`/`DedupResult` with two-stage canonical dedup (pre-fetch + post-fetch), three-way branching (new/unchanged/changed), merge semantics for user-owned fields, and partial-save semantics (bundle preserved if DB update fails)
@@ -60,17 +61,17 @@
 
 - `install.sh` — Root installer script (POSIX shell). Supports both repo-local and bootstrap (`curl | bash`) execution
 - Builds CLI via `cargo build --release`, installs binary to `~/.agentmark/bin/agentmark`, symlinks to `~/.local/bin/agentmark`
-- Builds extension via `npm ci` + `npm run build`, copies to durable `~/.agentmark/extension/`
-- Registers Chrome native messaging host manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.agentmark.native.json`
+- Extension installation and native host registration are delegated to `agentmark install-extension` — the extension is embedded in the CLI binary at compile time, so no Node.js is needed at install time
 - Delegates skill installation to `packages/skill/install-skill.sh` — do not duplicate agent-root detection
-- Flags: `--skip-init`, `--skip-extension`, `--extension-id ID`
+- Flags: `--skip-init`, `--extension-id ID`
 - Env overrides: `AGENTMARK_EXTENSION_ID`, `AGENTMARK_HOME`, `AGENTMARK_LOCAL_BIN`
 - Uses global variables for inter-function communication (not stdout capture) since display functions write to stdout
-- Tests in `packages/cli/tests/install_script_tests.rs` use temp repo fixtures with fake cargo/npm shims
+- Tests in `packages/cli/tests/install_script_tests.rs` use temp repo fixtures with fake cargo shims
 
 ## CI
 
 - GitHub Actions workflow: `.github/workflows/ci.yml`
-- Two jobs: `rust` (fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint, test)
+- Two jobs: `rust` (extension build, fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint, test)
+- The `rust` job builds the extension first so `include_dir!` embeds real files into the CLI binary
 - CI jobs run on `ubuntu-latest`, so macOS-specific CLI behaviors need an injectable or overrideable seam for tests instead of assuming local macOS binaries exist in CI
 - Extension job auto-skips if `packages/extension/package.json` does not exist

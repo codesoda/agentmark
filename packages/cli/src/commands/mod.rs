@@ -1,6 +1,7 @@
 pub mod bookmark_detail;
 pub mod collections;
 pub mod init;
+pub mod install_extension;
 pub mod list;
 pub mod native_host;
 pub mod open;
@@ -25,5 +26,6 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Open(args) => open::run_open(args),
         Commands::Reprocess(args) => reprocess::run_reprocess(args),
         Commands::NativeHost => native_host::run_native_host(),
+        Commands::InstallExtension(args) => install_extension::run_install_extension(args),
     }
 }

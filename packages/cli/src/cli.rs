@@ -39,6 +39,9 @@ pub enum Commands {
 
     /// Run the native messaging host for the browser extension
     NativeHost,
+
+    /// Extract the embedded Chrome extension and register the native messaging host
+    InstallExtension(InstallExtensionArgs),
 }
 
 #[derive(clap::Args)]
@@ -148,6 +151,17 @@ pub struct TagArgs {
 pub struct OpenArgs {
     /// Bookmark ID to open
     pub id: String,
+}
+
+#[derive(clap::Args)]
+pub struct InstallExtensionArgs {
+    /// Chrome extension ID for native host registration (32 lowercase letters)
+    #[arg(long)]
+    pub extension_id: Option<String>,
+
+    /// Override the extraction target directory
+    #[arg(long)]
+    pub target_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(clap::Args)]

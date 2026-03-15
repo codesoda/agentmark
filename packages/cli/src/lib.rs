@@ -7,6 +7,7 @@ pub mod config;
 pub mod db;
 pub(crate) mod display;
 pub(crate) mod enrich;
+pub(crate) mod extension;
 pub mod extract;
 pub mod fetch;
 pub mod models;
