@@ -355,18 +355,58 @@ ensure_local_bin_symlink() {
 install_extension_via_cli() {
     header "Installing extension"
 
-    ext_args=""
     if [ -n "$EXTENSION_ID" ]; then
-        ext_args="--extension-id $EXTENSION_ID"
+        # Extension ID already known — extract and register in one step
+        # shellcheck disable=SC2086
+        if "$INSTALLED_BINARY" install-extension --extension-id "$EXTENSION_ID"; then
+            return 0
+        else
+            warn "Extension installation had issues"
+            return 1
+        fi
     fi
 
-    # shellcheck disable=SC2086
-    if "$INSTALLED_BINARY" install-extension $ext_args; then
-        return 0
-    else
-        warn "Extension installation had issues"
+    # Extract extension files first
+    if ! "$INSTALLED_BINARY" install-extension 2>/dev/null; then
+        warn "Extension extraction failed"
         return 1
     fi
+
+    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
+    ext_dir="$agentmark_home/extension"
+
+    printf '\n'
+    info "Next: load the extension in Chrome"
+    dim "  1. Open chrome://extensions"
+    dim "  2. Enable Developer mode (top-right toggle)"
+    dim "  3. Click 'Load unpacked' and select:"
+    dim "     $ext_dir"
+    dim "  4. Copy the extension ID shown on the card"
+    printf '\n'
+
+    # Try to open Chrome extensions page on macOS
+    if [ "$(uname -s)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+        open "chrome://extensions" 2>/dev/null || true
+    fi
+
+    # If interactive, wait for the user to provide the extension ID
+    if [ -t 0 ]; then
+        printf '%b' "${C_OK}Enter the extension ID (or press Enter to skip): ${C_RESET}"
+        read -r user_ext_id
+        if [ -n "$user_ext_id" ]; then
+            if "$INSTALLED_BINARY" install-extension --extension-id "$user_ext_id"; then
+                return 0
+            else
+                warn "Native host registration failed — you can retry later with:"
+                dim "  agentmark install-extension --extension-id $user_ext_id"
+                return 1
+            fi
+        fi
+    fi
+
+    dim "  You can register the native host later with:"
+    dim "  agentmark install-extension --extension-id YOUR_EXTENSION_ID"
+    return 0
 }
 
 # --- Skill installation ---
