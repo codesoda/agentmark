@@ -271,7 +271,7 @@ export default function Popup() {
               </p>
               <ol className="mt-1 list-inside list-decimal space-y-0.5">
                 <li>Install: <code>curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash</code></li>
-                <li>Register host: <code>curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash -s -- --extension-id {chrome.runtime?.id ?? "YOUR_ID"} --skip-init --skip-extension</code></li>
+                <li>Register host: <code>agentmark install-extension --extension-id {chrome.runtime?.id ?? "YOUR_ID"}</code></li>
                 <li>Reload this extension</li>
               </ol>
             </div>
