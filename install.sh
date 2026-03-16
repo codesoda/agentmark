@@ -22,11 +22,11 @@
 
 set -eu
 
-# --- Configuration ---
+# --- Configuration (overridable for forks) ---
 
-REPO_OWNER="codesoda"
-REPO_NAME="agentmark"
-REPO_REF="main"
+REPO_OWNER="${AGENTMARK_REPO_OWNER:-codesoda}"
+REPO_NAME="${AGENTMARK_REPO_NAME:-agentmark}"
+REPO_REF="${AGENTMARK_REPO_REF:-main}"
 
 # --- Color support ---
 
@@ -384,9 +384,15 @@ install_extension_via_cli() {
     dim "  4. Copy the extension ID shown on the card"
     printf '\n'
 
-    # Try to open Chrome extensions page on macOS
-    if [ "$(uname -s)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
-        open "chrome://extensions" 2>/dev/null || true
+    # macOS: open Chrome extensions page and copy path to clipboard
+    if [ "$(uname -s)" = "Darwin" ]; then
+        if command -v pbcopy >/dev/null 2>&1; then
+            printf '%s' "$ext_dir" | pbcopy
+            ok "Extension path copied to clipboard"
+        fi
+        if command -v open >/dev/null 2>&1; then
+            open "chrome://extensions" 2>/dev/null || true
+        fi
     fi
 
     # If interactive, wait for the user to provide the extension ID
@@ -409,39 +415,18 @@ install_extension_via_cli() {
     return 0
 }
 
-# --- Skill installation ---
+# --- Skill installation (delegated to CLI) ---
 
 install_skill() {
     header "Installing agent skill"
 
-    # If we have a source tree, use the skill installer from it
-    if [ -n "$SOURCE_ROOT" ] && [ -f "$SOURCE_ROOT/packages/skill/install-skill.sh" ]; then
-        if ! sh "$SOURCE_ROOT/packages/skill/install-skill.sh"; then
-            warn "Skill installation failed — other components still installed"
-            return 1
-        fi
+    if "$INSTALLED_BINARY" add-skill; then
         ok "Agent skill installed"
         return 0
+    else
+        warn "Skill installation failed"
+        return 1
     fi
-
-    # For release installs, download skill files to a temp dir and run installer
-    if command -v curl >/dev/null 2>&1; then
-        skill_tmp="${TMP_DIR:-$(mktemp -d)}/skill"
-        mkdir -p "$skill_tmp"
-        base_url="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_REF/packages/skill"
-
-        if curl -sSL --fail -o "$skill_tmp/SKILL.md" "$base_url/SKILL.md" && \
-           curl -sSL --fail -o "$skill_tmp/agentmark.md" "$base_url/agentmark.md" && \
-           curl -sSL --fail -o "$skill_tmp/install-skill.sh" "$base_url/install-skill.sh"; then
-            if sh "$skill_tmp/install-skill.sh"; then
-                ok "Agent skill installed"
-                return 0
-            fi
-        fi
-    fi
-
-    warn "Skill installation skipped — install manually from the repo"
-    return 1
 }
 
 # --- First-time setup ---

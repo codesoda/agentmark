@@ -42,6 +42,9 @@ pub enum Commands {
 
     /// Extract the embedded Chrome extension and register the native messaging host
     InstallExtension(InstallExtensionArgs),
+
+    /// Install the AgentMark skill into local agent systems (Claude Code, Codex)
+    AddSkill,
 }
 
 #[derive(clap::Args)]

@@ -24,14 +24,6 @@ fn install_script_path() -> PathBuf {
         .join("install.sh")
 }
 
-/// Path to the skill source directory.
-fn skill_source_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("skill")
-}
-
 /// Create a temp repo fixture with install.sh and fake skill files.
 struct TestFixture {
     tmp: TempDir,
@@ -54,22 +46,6 @@ impl TestFixture {
 
         // Create packages/cli directory
         fs::create_dir_all(root.join("packages/cli")).unwrap();
-
-        // Copy skill files
-        let skill_src = skill_source_dir();
-        let skill_dest = root.join("packages/skill");
-        fs::create_dir_all(&skill_dest).unwrap();
-        fs::copy(skill_src.join("SKILL.md"), skill_dest.join("SKILL.md")).unwrap();
-        fs::copy(
-            skill_src.join("agentmark.md"),
-            skill_dest.join("agentmark.md"),
-        )
-        .unwrap();
-        fs::copy(
-            skill_src.join("install-skill.sh"),
-            skill_dest.join("install-skill.sh"),
-        )
-        .unwrap();
 
         TestFixture { tmp }
     }
@@ -183,7 +159,6 @@ impl InstallerResult {
     fn init_log_contents(&self) -> String {
         fs::read_to_string(&self.init_log).unwrap_or_default()
     }
-
 }
 
 fn set_executable(path: &Path) {
@@ -359,23 +334,18 @@ fn extension_id_via_env_var() {
 }
 
 #[test]
-fn delegates_skill_installation() {
+fn delegates_skill_installation_to_cli() {
     let fixture = TestFixture::new();
     let result = fixture.run_installer(&["--skip-init"]);
 
     assert!(result.success(), "Installer failed:\n{}", result.stdout());
 
-    // Canonical skill should be installed
-    let canonical = result.home.join(".agents/skills/agentmark");
+    // The fake binary should have been invoked with add-skill
+    let log = result.init_log_contents();
     assert!(
-        canonical.join("SKILL.md").exists(),
-        "Canonical SKILL.md should exist"
+        log.contains("add-skill"),
+        "CLI should be called with add-skill, got log: {log}"
     );
-
-    // Agent root symlinks should exist
-    let claude_link = result.home.join(".claude/skills/agentmark");
-    assert!(claude_link.is_symlink(), "Claude skill should be symlinked");
-    assert_eq!(fs::read_link(&claude_link).unwrap(), canonical);
 }
 
 #[test]
@@ -577,22 +547,6 @@ fn home_with_spaces() {
     )
     .unwrap();
     fs::create_dir_all(root.join("packages/cli")).unwrap();
-
-    // Copy skill files
-    let skill_src = skill_source_dir();
-    let skill_dest = root.join("packages/skill");
-    fs::create_dir_all(&skill_dest).unwrap();
-    fs::copy(skill_src.join("SKILL.md"), skill_dest.join("SKILL.md")).unwrap();
-    fs::copy(
-        skill_src.join("agentmark.md"),
-        skill_dest.join("agentmark.md"),
-    )
-    .unwrap();
-    fs::copy(
-        skill_src.join("install-skill.sh"),
-        skill_dest.join("install-skill.sh"),
-    )
-    .unwrap();
 
     // HOME with spaces
     let home = tmp.path().join("home dir with spaces");

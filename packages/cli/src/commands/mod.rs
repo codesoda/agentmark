@@ -1,3 +1,4 @@
+pub mod add_skill;
 pub mod bookmark_detail;
 pub mod collections;
 pub mod init;
@@ -27,5 +28,6 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Reprocess(args) => reprocess::run_reprocess(args),
         Commands::NativeHost => native_host::run_native_host(),
         Commands::InstallExtension(args) => install_extension::run_install_extension(args),
+        Commands::AddSkill => add_skill::run_add_skill(),
     }
 }
