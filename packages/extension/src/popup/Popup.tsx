@@ -266,14 +266,8 @@ export default function Popup() {
           {quickSaveState.isConnectionError && (
             <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" data-testid="install-guidance">
               <p className="font-medium">Native host not connected</p>
-              <p className="mt-1">
-                Run the installer to set up the CLI and native messaging host:
-              </p>
-              <ol className="mt-1 list-inside list-decimal space-y-0.5">
-                <li>Install: <code>curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash</code></li>
-                <li>Register host: <code>agentmark install-extension --extension-id {chrome.runtime?.id ?? "YOUR_ID"}</code></li>
-                <li>Reload this extension</li>
-              </ol>
+              <p className="mt-2">Run this in your terminal, then reload the extension:</p>
+              <code className="mt-1 block rounded bg-amber-100 p-1.5 text-[11px] select-all">agentmark install-extension --extension-id {chrome.runtime?.id ?? "YOUR_ID"}</code>
             </div>
           )}
           <button
