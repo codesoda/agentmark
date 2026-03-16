@@ -29,8 +29,8 @@ impl AgentProvider for ClaudeProvider {
             "--output-format",
             "json", // structured JSON output
             "--max-turns",
-            "1",          // single turn, no tool loops
-            "--no-input", // don't read from terminal
+            "1",                        // single turn, no tool loops
+            "--no-session-persistence", // don't pollute user's session history
         ];
 
         // Apply system prompt via CLI flag if available

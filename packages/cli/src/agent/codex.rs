@@ -32,17 +32,11 @@ impl AgentProvider for CodexProvider {
 
         let schema_path_str = schema_path.to_string_lossy().to_string();
         let mut args: Vec<&str> = vec![
-            "exec", // non-interactive execution
-            "--non-interactive",
+            "exec",        // non-interactive execution
+            "--ephemeral", // don't persist session history
+            "--sandbox",
+            "read-only", // no writes needed for enrichment
         ];
-
-        // Apply system prompt via CLI flag if available
-        let system_prompt_str;
-        if let Some(ref sp) = parts.system_prompt {
-            system_prompt_str = sp.clone();
-            args.push("--system-prompt");
-            args.push(&system_prompt_str);
-        }
 
         args.push("--output-schema");
         args.push(&schema_path_str);
@@ -352,9 +346,9 @@ mod tests {
 
         let captured_args = args.lock().unwrap().clone().unwrap();
         assert!(captured_args.contains(&"exec".to_string()));
-        assert!(captured_args.contains(&"--non-interactive".to_string()));
-        assert!(captured_args.contains(&"--system-prompt".to_string()));
-        assert!(captured_args.contains(&"Be helpful.".to_string()));
+        assert!(captured_args.contains(&"--ephemeral".to_string()));
+        assert!(captured_args.contains(&"--sandbox".to_string()));
+        assert!(captured_args.contains(&"read-only".to_string()));
         assert!(captured_args.contains(&"--output-schema".to_string()));
 
         let captured_stdin = stdin.lock().unwrap().clone().unwrap();
