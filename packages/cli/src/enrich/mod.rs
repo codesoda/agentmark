@@ -288,6 +288,7 @@ mod tests {
             default_agent: "claude".to_string(),
             storage_path: storage_path.to_path_buf(),
             system_prompt: None,
+            log_level: None,
             enrichment: crate::config::EnrichmentConfig { enabled: true },
         }
     }

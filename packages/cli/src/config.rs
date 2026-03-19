@@ -54,6 +54,7 @@ pub struct Config {
     pub default_agent: String,
     pub storage_path: PathBuf,
     pub system_prompt: Option<String>,
+    pub log_level: Option<String>,
     pub enrichment: EnrichmentConfig,
 }
 
@@ -77,6 +78,11 @@ pub fn config_file(home: &Path) -> PathBuf {
 /// Returns the index database path for a given home.
 pub fn index_db_path(home: &Path) -> PathBuf {
     config_dir(home).join("index.db")
+}
+
+/// Returns the logs directory path for a given home.
+pub fn logs_dir(home: &Path) -> PathBuf {
+    config_dir(home).join("logs")
 }
 
 /// Resolves a user-provided storage path to an absolute path.
@@ -132,6 +138,9 @@ const SYSTEM_PROMPT_COMMENT: &str = r#"
 # - agent-ui for presenting native macOS UI dialogs
 # Include any context about your local setup here.
 # """
+
+# Log level for file logging (~/.agentmark/logs/). Overridden by AGENTMARK_LOG env var.
+# log_level = "debug"
 "#;
 
 /// Renders a Config to a human-readable TOML string with commented examples.
@@ -229,6 +238,7 @@ mod tests {
             default_agent: "claude".to_string(),
             storage_path: PathBuf::from("/home/user/bookmarks"),
             system_prompt: None,
+            log_level: None,
             enrichment: EnrichmentConfig { enabled: true },
         }
     }

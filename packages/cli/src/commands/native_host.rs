@@ -7,6 +7,8 @@
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use tracing::{debug, error, info, warn};
+
 use crate::commands::bookmark_detail;
 use crate::commands::save::{self, DedupResult, SaveRequest};
 use crate::config;
@@ -20,17 +22,26 @@ use crate::native::protocol::{self, ProtocolError};
 
 /// Entry point for `agentmark native-host` using real stdin/stdout.
 pub fn run_native_host() -> Result<(), Box<dyn std::error::Error>> {
+    info!(
+        "native-host starting (version {})",
+        env!("CARGO_PKG_VERSION")
+    );
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
     let home = config::home_dir()?;
-    run_native_host_with_io(
+    let result = run_native_host_with_io(
         &mut reader,
         &mut writer,
         &home,
         &save::default_provider_factory,
-    )
+    );
+    match &result {
+        Ok(()) => info!("native-host exiting normally"),
+        Err(e) => error!("native-host exiting with error: {e}"),
+    }
+    result
 }
 
 /// Testable host loop over injectable I/O, home dir, and provider factory.
@@ -44,10 +55,15 @@ pub(crate) fn run_native_host_with_io(
         // Read one framed message
         let value = match protocol::read_message(reader) {
             Ok(v) => v,
-            Err(ProtocolError::Eof) => return Ok(()),
+            Err(ProtocolError::Eof) => {
+                debug!("stdin EOF — exiting message loop");
+                return Ok(());
+            }
             Err(ProtocolError::MessageTooLarge { size }) => {
+                warn!("received oversized message ({size} bytes), draining");
                 // Drain the oversized payload to restore stream alignment
                 if let Err(drain_err) = protocol::drain_payload(reader, size) {
+                    error!("failed to drain oversized message: {drain_err}");
                     return Err(
                         format!("fatal: failed to drain oversized message: {drain_err}").into(),
                     );
@@ -60,16 +76,19 @@ pub(crate) fn run_native_host_with_io(
                 continue;
             }
             Err(ProtocolError::EmptyMessage) => {
+                warn!("received empty message (length zero)");
                 let response = OutgoingMessage::error("message length is zero");
                 write_response(writer, &response)?;
                 continue;
             }
             Err(ProtocolError::InvalidJson(e)) => {
+                warn!("received invalid JSON: {e}");
                 let response = OutgoingMessage::error(format!("invalid JSON: {e}"));
                 write_response(writer, &response)?;
                 continue;
             }
             Err(e) => {
+                error!("fatal protocol error: {e}");
                 // UnexpectedEof or Io — fatal transport errors
                 return Err(format!("fatal protocol error: {e}").into());
             }
@@ -77,8 +96,12 @@ pub(crate) fn run_native_host_with_io(
 
         // Parse into typed message
         let incoming = match IncomingMessage::from_value(value) {
-            Ok(msg) => msg,
+            Ok(msg) => {
+                debug!("received message: {msg:?}");
+                msg
+            }
             Err(e) => {
+                warn!("failed to parse message: {e}");
                 let response = OutgoingMessage::error(e.to_string());
                 write_response(writer, &response)?;
                 continue;
@@ -87,6 +110,7 @@ pub(crate) fn run_native_host_with_io(
 
         // Dispatch
         let response = dispatch(incoming, home, provider_factory);
+        debug!("sending response: {response:?}");
         write_response(writer, &response)?;
     }
 }
@@ -154,6 +178,7 @@ fn handle_save(
     home: &Path,
     provider_factory: &ProviderFactory,
 ) -> OutgoingMessage {
+    info!("saving bookmark: url={}", req.url);
     match save::execute_save_request(home, &req, provider_factory) {
         Ok(outcome) => {
             let status = match outcome.dedup {
@@ -161,13 +186,17 @@ fn handle_save(
                 DedupResult::Unchanged => "updated",
                 DedupResult::ContentChanged => "content_updated",
             };
+            info!("save succeeded: id={} status={status}", outcome.id);
             OutgoingMessage::SaveResult {
                 id: outcome.id,
                 path: outcome.bundle_path.display().to_string(),
                 status: status.to_string(),
             }
         }
-        Err(e) => OutgoingMessage::error(e.to_string()),
+        Err(e) => {
+            error!("save failed for url={}: {e}", req.url);
+            OutgoingMessage::error(e.to_string())
+        }
     }
 }
 
