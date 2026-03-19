@@ -1,11 +1,11 @@
 //! Logging setup for the AgentMark CLI.
 //!
 //! Initialises a daily-rolling file appender under `~/.agentmark/logs/`
-//! using the `tracing` ecosystem. Log files are named `agentmark.YYYY-MM-DD.log`.
+//! using the `tracing` ecosystem. Log files are named `agentmark-YYYY-MM-DD.log`.
 
 use std::path::Path;
 
-use tracing_appender::rolling;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, EnvFilter};
 
 /// Initialise file-based tracing for a given home directory.
@@ -23,7 +23,12 @@ pub fn init(home: &Path, config_level: Option<&str>) {
     // simply fail to open files and tracing becomes a no-op.
     let _ = std::fs::create_dir_all(&logs_dir);
 
-    let file_appender = rolling::daily(&logs_dir, "agentmark.log");
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("agentmark-")
+        .filename_suffix(".log")
+        .build(&logs_dir)
+        .expect("failed to create log file appender");
 
     let filter = EnvFilter::try_from_env("AGENTMARK_LOG")
         .unwrap_or_else(|_| EnvFilter::new(config_level.unwrap_or("info")));

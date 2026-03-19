@@ -7,7 +7,18 @@ use agentmark::logging;
 use clap::Parser;
 
 fn main() {
-    let cli = Cli::parse();
+    // Chrome invokes native messaging hosts with a single arg: the extension
+    // origin (e.g. "chrome-extension://abc.../"). Rewrite args so clap sees
+    // the `native-host` subcommand instead.
+    let args: Vec<String> = std::env::args().collect();
+    let use_native_host = args.len() == 2
+        && args[1].starts_with("chrome-extension://");
+
+    let cli = if use_native_host {
+        Cli::parse_from([&args[0], "native-host"])
+    } else {
+        Cli::parse()
+    };
 
     // Initialise daily-rolling file logging under ~/.agentmark/logs/
     if let Ok(home) = config::home_dir() {
