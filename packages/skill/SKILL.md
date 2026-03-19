@@ -3,7 +3,7 @@ name: agentmark
 description: Use when the user mentions bookmarks, saved pages, or wants to save, search, tag, or manage web content via the `agentmark` CLI
 ---
 
-AgentMark is the user's bookmarking system. When the user says "bookmarks", "saved pages", "what did I save", or anything about their bookmarks, they mean AgentMark. Always use the `agentmark` CLI commands below — never search Safari, Chrome, or other browser bookmark files.
+AgentMark is the user's bookmarking system. When the user says "bookmarks", "saved pages", "what did I save", or anything about their bookmarks, they mean AgentMark. Always use the `agentmark` CLI commands below to find, save, and manage bookmarks.
 
 <required>
 - The `agentmark` CLI must be installed and on PATH
