@@ -43,7 +43,7 @@ fn run_install_extension_with_home(
     if let Some(ref ext_id) = args.extension_id {
         validate_extension_id(ext_id)?;
 
-        let binary_path = std::env::current_exe()?;
+        let binary_path = config::config_dir(home).join("bin").join("agentmark");
         let manifest_path = write_native_host_manifest(home, ext_id, &binary_path)?;
         println!("Native host registered at {}", manifest_path.display());
     } else {
@@ -173,6 +173,7 @@ mod tests {
         assert_eq!(content["name"], "com.agentmark.native");
         assert_eq!(content["type"], "stdio");
         assert_eq!(content["path"], "/usr/local/bin/agentmark");
+        assert!(content.get("args").is_none());
         assert_eq!(
             content["allowed_origins"][0],
             "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"

@@ -48,6 +48,7 @@ pub fn run_init_with_io(
         default_agent,
         storage_path: storage_path.clone(),
         system_prompt: None,
+        log_level: None,
         enrichment: EnrichmentConfig { enabled: true },
     };
 

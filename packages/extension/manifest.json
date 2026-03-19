@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AgentMark",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Agent-first bookmarking for local AI workflows",
   "action": {
     "default_popup": "src/popup/index.html"

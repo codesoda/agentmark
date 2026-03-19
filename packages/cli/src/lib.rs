@@ -10,6 +10,7 @@ pub(crate) mod enrich;
 pub(crate) mod extension;
 pub mod extract;
 pub mod fetch;
+pub mod logging;
 pub mod models;
 pub mod native;
 pub(crate) mod skill;

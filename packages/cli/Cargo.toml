@@ -1,6 +1,6 @@
 [package]
 name = "agentmark"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -27,6 +27,9 @@ serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
 toml = "0.8"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "1"
 url = "2"
 
