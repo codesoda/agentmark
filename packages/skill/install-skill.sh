@@ -42,9 +42,6 @@ install_canonical_root() {
     # Copy skill files into canonical location
     source_dir="$1"
     cp "$source_dir/SKILL.md" "$canonical_dir/SKILL.md"
-    if [ -f "$source_dir/agentmark.md" ]; then
-        cp "$source_dir/agentmark.md" "$canonical_dir/agentmark.md"
-    fi
 
     echo "$canonical_dir"
 }

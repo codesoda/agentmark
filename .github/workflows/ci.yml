@@ -44,6 +44,21 @@ jobs:
       - name: Test
         run: cargo test
 
+  skill:
+    name: Skill lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Lint SKILL.md files
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: sh packages/skill/lint.sh
+
   extension:
     name: Extension checks
     runs-on: ubuntu-latest
