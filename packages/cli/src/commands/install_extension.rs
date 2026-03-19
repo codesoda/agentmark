@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(content["name"], "com.agentmark.native");
         assert_eq!(content["type"], "stdio");
         assert_eq!(content["path"], "/usr/local/bin/agentmark");
-        assert_eq!(content["args"][0], "native-host");
+        assert!(content.get("args").is_none());
         assert_eq!(
             content["allowed_origins"][0],
             "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
