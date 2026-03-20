@@ -53,8 +53,7 @@
 
 ## Cross-Agent Skill
 
-- `packages/skill/agentmark.md` — skill prompt (spec-facing source of truth)
-- `packages/skill/SKILL.md` — byte-for-byte mirror for agent loader compatibility (enforced by test)
+- `packages/skill/SKILL.md` — skill prompt (source of truth for agent loaders)
 - `packages/skill/install-skill.sh` — installs canonical copy to `~/.agents/skills/agentmark/` and symlinks into detected agent roots (`~/.claude/skills/`, `~/.codex/skills/`)
 - Environment overrides for testing: `AGENTMARK_SHARED_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `CODEX_SKILLS_DIR`
 ## Installer

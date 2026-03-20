@@ -7,7 +7,6 @@ use std::path::Path;
 use crate::config;
 
 const SKILL_MD: &str = include_str!("../../skill/SKILL.md");
-const AGENTMARK_MD: &str = include_str!("../../skill/agentmark.md");
 
 const SKILL_NAME: &str = "agentmark";
 
@@ -23,7 +22,6 @@ pub fn install_skill(home: &Path) -> Result<SkillInstallResult, Box<dyn std::err
     // Write skill files to canonical location
     std::fs::create_dir_all(&canonical_dir)?;
     std::fs::write(canonical_dir.join("SKILL.md"), SKILL_MD)?;
-    std::fs::write(canonical_dir.join("agentmark.md"), AGENTMARK_MD)?;
 
     // Symlink into agent roots
     let mut linked = Vec::new();
@@ -116,7 +114,6 @@ mod tests {
             "Canonical dir should be under ~/.agentmark/"
         );
         assert!(result.canonical_dir.join("SKILL.md").exists());
-        assert!(result.canonical_dir.join("agentmark.md").exists());
     }
 
     #[test]

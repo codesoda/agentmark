@@ -2,7 +2,6 @@
 //!
 //! Validates:
 //! - Skill markdown content matches implemented CLI commands
-//! - SKILL.md stays in sync with agentmark.md
 //! - install-skill.sh works correctly in temp HOME environments
 //! - Shell syntax is valid
 
@@ -21,19 +20,7 @@ fn skill_dir() -> PathBuf {
 }
 
 fn skill_content() -> String {
-    fs::read_to_string(skill_dir().join("agentmark.md")).expect("agentmark.md should exist")
-}
-
-// --- Markdown sync tests ---
-
-#[test]
-fn skill_md_and_agentmark_md_are_byte_identical() {
-    let agentmark = fs::read(skill_dir().join("agentmark.md")).expect("agentmark.md should exist");
-    let skill = fs::read(skill_dir().join("SKILL.md")).expect("SKILL.md should exist");
-    assert_eq!(
-        agentmark, skill,
-        "SKILL.md must be byte-for-byte identical to agentmark.md"
-    );
+    fs::read_to_string(skill_dir().join("SKILL.md")).expect("SKILL.md should exist")
 }
 
 // --- Markdown content presence tests ---
@@ -276,7 +263,6 @@ fn installer_creates_canonical_root_and_symlinks_both_agents() {
     // Canonical root exists with SKILL.md
     let canonical = shared.join("agentmark");
     assert!(canonical.join("SKILL.md").exists());
-    assert!(canonical.join("agentmark.md").exists());
 
     // Agent roots are symlinks to canonical
     let claude_link = claude.join("agentmark");
