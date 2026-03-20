@@ -6,6 +6,8 @@
 //!
 //! Designed for reuse by both `commands/save.rs` and future `commands/reprocess.rs`.
 
+use tracing::{debug, info, instrument, warn};
+
 use crate::agent::{AgentError, AgentProvider, EnrichmentRequest, EnrichmentResponse};
 use crate::bundle::{BodySections, Bundle};
 use crate::config::Config;
@@ -44,6 +46,7 @@ pub(crate) enum EnrichOutcome {
 /// On success, mutates `bookmark` in place and persists to bundle, DB, and events.
 /// On failure, marks `summary_status = Failed` and returns a warning string.
 /// Never returns an error — enrichment failures degrade to warnings.
+#[instrument(skip_all, fields(id = %bookmark.id, url = %bookmark.url))]
 pub(crate) fn enrich_bookmark(
     bookmark: &mut Bookmark,
     article_markdown: &str,
@@ -54,6 +57,7 @@ pub(crate) fn enrich_bookmark(
 ) -> EnrichOutcome {
     // Gate: enrichment disabled in config
     if !config.enrichment.enabled {
+        debug!("enrichment disabled in config");
         return EnrichOutcome::Skipped {
             reason: "enrichment disabled in config".to_string(),
         };
@@ -61,6 +65,7 @@ pub(crate) fn enrich_bookmark(
 
     // Gate: blank article content — no point sending to provider
     if article_markdown.trim().is_empty() {
+        warn!("enrichment skipped: no article content");
         return handle_failure(bookmark, bundle, repo, "no article content to enrich");
     }
 
@@ -68,6 +73,7 @@ pub(crate) fn enrich_bookmark(
     let provider = match provider_factory(&config.default_agent, config.system_prompt.as_deref()) {
         Ok(p) => p,
         Err(e) => {
+            warn!(error = %e, "failed to create agent provider");
             return handle_failure(
                 bookmark,
                 bundle,
@@ -81,13 +87,21 @@ pub(crate) fn enrich_bookmark(
     let request = build_request(bookmark, article_markdown);
 
     // Call provider
+    debug!("calling enrichment provider");
     let response = match provider.enrich(&request) {
         Ok(r) => r,
         Err(e) => {
+            warn!("enrichment provider call failed");
             let detail = sanitize_error(&e);
             return handle_failure(bookmark, bundle, repo, &detail);
         }
     };
+
+    info!(
+        tags = response.suggested_tags.len(),
+        collection = ?response.suggested_collection,
+        "enrichment response received"
+    );
 
     // Apply success
     apply_success(bookmark, response, article_markdown, bundle, repo)

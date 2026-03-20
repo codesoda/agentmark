@@ -3,6 +3,8 @@
 //! Uses the shared `bookmark_detail` helper for DB+bundle loading,
 //! then adds article content and CLI formatting on top.
 
+use tracing::instrument;
+
 use crate::bundle::Bundle;
 use crate::cli::ShowArgs;
 use crate::config;
@@ -13,6 +15,7 @@ use super::bookmark_detail::{self, DetailError};
 // ── Entry point ─────────────────────────────────────────────────────
 
 /// Entry point for `agentmark show <id>`.
+#[instrument(skip(args), fields(id = %args.id))]
 pub fn run_show(args: ShowArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = config::home_dir()?;
 

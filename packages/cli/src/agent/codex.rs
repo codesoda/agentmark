@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use tracing::{debug, instrument, warn};
+
 use super::prompt::{build_prompt, ENRICHMENT_SCHEMA};
 use super::provider::{
     normalize_response, AgentError, AgentProvider, EnrichmentRequest, EnrichmentResponse,
@@ -23,11 +25,13 @@ impl CodexProvider {
 }
 
 impl AgentProvider for CodexProvider {
+    #[instrument(skip(self, request), fields(url = %request.url))]
     fn enrich(&self, request: &EnrichmentRequest) -> Result<EnrichmentResponse, AgentError> {
         let parts = build_prompt(request, self.system_prompt.as_deref());
 
         // Write schema to a temp file for codex --output-schema flag
         let schema_path = write_temp_schema()?;
+        debug!(schema_path = %schema_path.display(), "codex schema written");
         let _cleanup = TempFileGuard(schema_path.clone());
 
         let schema_path_str = schema_path.to_string_lossy().to_string();
@@ -50,6 +54,7 @@ impl AgentProvider for CodexProvider {
             })?;
 
         if output.exit_code != 0 {
+            warn!(exit_code = output.exit_code, "codex CLI failed");
             let stderr = truncate_stderr(&output.stderr);
             return Err(AgentError::ProcessFailed {
                 provider: "codex",
@@ -58,6 +63,7 @@ impl AgentProvider for CodexProvider {
             });
         }
 
+        debug!("codex CLI returned successfully");
         let raw_response = parse_codex_output(&output.stdout)?;
         normalize_response(raw_response, "codex")
     }

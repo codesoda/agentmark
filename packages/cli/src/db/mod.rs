@@ -16,6 +16,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 pub use repository::BookmarkRepository;
 
@@ -42,12 +43,14 @@ pub enum DbError {
 }
 
 /// Open (or create) a SQLite database at `path` and ensure the schema is current.
+#[instrument(fields(path = %path.display()))]
 pub fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
     let conn = Connection::open(path).map_err(|e| DbError::Open {
         path: path.display().to_string(),
         source: e,
     })?;
     schema::ensure_schema(&conn)?;
+    debug!("database opened and schema verified");
     Ok(conn)
 }
 

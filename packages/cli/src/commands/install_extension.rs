@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tracing::{debug, instrument};
+
 use crate::cli::InstallExtensionArgs;
 use crate::config;
 use crate::extension;
@@ -15,6 +17,7 @@ pub fn run_install_extension(args: InstallExtensionArgs) -> Result<(), Box<dyn s
     run_install_extension_with_home(&home, &args)
 }
 
+#[instrument(skip(home, args))]
 fn run_install_extension_with_home(
     home: &Path,
     args: &InstallExtensionArgs,
@@ -37,6 +40,7 @@ fn run_install_extension_with_home(
         std::fs::remove_dir_all(&target)?;
     }
     extension::extract_to(&target)?;
+    debug!(path = %target.display(), "extension extracted");
     println!("Extension extracted to {}", target.display());
 
     // 4. Register native host manifest if extension ID provided

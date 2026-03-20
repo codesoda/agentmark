@@ -1,5 +1,7 @@
 //! List command: browse saved bookmarks with optional filters.
 
+use tracing::{debug, instrument};
+
 use crate::cli::{ListArgs, StateFilter};
 use crate::config::{self, Config};
 use crate::db::{self, BookmarkRepository};
@@ -7,6 +9,7 @@ use crate::display;
 use crate::models::BookmarkState;
 
 /// Entry point for `agentmark list`.
+#[instrument(skip(args), fields(limit = args.limit))]
 pub fn run_list(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = config::home_dir()?;
     let config = Config::load(&home)?;
@@ -23,6 +26,7 @@ pub fn run_list(args: ListArgs) -> Result<(), Box<dyn std::error::Error>> {
         args.tag.as_deref(),
         state.as_ref(),
     )?;
+    debug!(count = bookmarks.len(), "bookmarks listed");
 
     let _ = config; // config loaded to verify init; not used otherwise
 

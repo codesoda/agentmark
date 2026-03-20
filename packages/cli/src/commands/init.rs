@@ -1,6 +1,8 @@
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
+use tracing::instrument;
+
 use crate::config::{self, Config, ConfigError, EnrichmentConfig};
 
 /// Entry point for `agentmark init` using real stdio and environment.
@@ -19,6 +21,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Testable init implementation with injected I/O and paths.
+#[instrument(skip(home, cwd, reader, writer))]
 pub fn run_init_with_io(
     home: &Path,
     cwd: &Path,

@@ -5,6 +5,7 @@
 //! main `bookmarks` table.
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use tracing::instrument;
 
 use crate::models::Bookmark;
 use crate::models::{BookmarkState, CaptureSource, ContentStatus, SummaryStatus};
@@ -202,6 +203,7 @@ impl<'a> BookmarkRepository<'a> {
     }
 
     /// Insert a bookmark. FTS is updated automatically by the trigger.
+    #[instrument(skip(self, bookmark), fields(id = %bookmark.id, url = %bookmark.url))]
     pub fn insert(&self, bookmark: &Bookmark) -> Result<(), DbError> {
         let sql = format!(
             "INSERT INTO bookmarks ({INSERT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
@@ -237,6 +239,7 @@ impl<'a> BookmarkRepository<'a> {
     /// Update a bookmark by ID. FTS is re-indexed automatically by the trigger.
     ///
     /// Returns `Ok(true)` if a row was updated, `Ok(false)` if the ID was not found.
+    #[instrument(skip(self, bookmark), fields(id = %bookmark.id))]
     pub fn update(&self, bookmark: &Bookmark) -> Result<bool, DbError> {
         let sql = "UPDATE bookmarks SET \
             url=?2, canonical_url=?3, title=?4, description=?5, author=?6, \
@@ -274,6 +277,7 @@ impl<'a> BookmarkRepository<'a> {
     }
 
     /// Get a bookmark by its ID.
+    #[instrument(skip(self), fields(%id))]
     pub fn get_by_id(&self, id: &str) -> Result<Option<Bookmark>, DbError> {
         let sql = format!("SELECT {SELECT_COLS} FROM bookmarks WHERE id = ?1");
         let result = self
@@ -295,6 +299,7 @@ impl<'a> BookmarkRepository<'a> {
     ///
     /// If multiple rows share the same canonical URL (legacy duplicates),
     /// returns the earliest saved one (ORDER BY saved_at ASC LIMIT 1).
+    #[instrument(skip(self), fields(canonical_url = %url))]
     pub fn get_by_canonical_url(&self, url: &str) -> Result<Option<Bookmark>, DbError> {
         let sql = format!(
             "SELECT {SELECT_COLS} FROM bookmarks WHERE canonical_url = ?1 \
@@ -320,6 +325,7 @@ impl<'a> BookmarkRepository<'a> {
     /// - `collection`: exact match against the `collections` JSON array
     /// - `tag`: exact match against either `user_tags` or `suggested_tags` JSON arrays
     /// - `state`: exact match against the `state` column
+    #[instrument(skip(self), fields(%limit, %offset))]
     pub fn list(
         &self,
         limit: usize,
@@ -391,6 +397,7 @@ impl<'a> BookmarkRepository<'a> {
     ///
     /// - Empty or whitespace-only queries return an empty vector.
     /// - Optional `collection` filter scopes results.
+    #[instrument(skip(self), fields(%query, %limit))]
     pub fn search(
         &self,
         query: &str,
@@ -452,6 +459,7 @@ impl<'a> BookmarkRepository<'a> {
     /// List all collections with their bookmark counts.
     ///
     /// A bookmark with `collections: ["a", "b"]` contributes 1 to each count.
+    #[instrument(skip(self))]
     pub fn list_collections(&self) -> Result<Vec<(String, usize)>, DbError> {
         let mut stmt = self.conn.prepare("SELECT collections FROM bookmarks")?;
         let rows = stmt.query_map([], |row| {
@@ -474,6 +482,7 @@ impl<'a> BookmarkRepository<'a> {
     }
 
     /// Delete a bookmark by ID. Returns `true` if a row was deleted.
+    #[instrument(skip(self), fields(%id))]
     pub fn delete(&self, id: &str) -> Result<bool, DbError> {
         let deleted = self
             .conn
@@ -482,6 +491,7 @@ impl<'a> BookmarkRepository<'a> {
     }
 
     /// Set the DB-internal summary for a bookmark. Used by enrichment pipeline.
+    #[instrument(skip(self, summary), fields(%id))]
     pub fn set_summary(&self, id: &str, summary: &str) -> Result<bool, DbError> {
         let updated = self.conn.execute(
             "UPDATE bookmarks SET summary = ?2 WHERE id = ?1",
@@ -491,6 +501,7 @@ impl<'a> BookmarkRepository<'a> {
     }
 
     /// Count all bookmarks.
+    #[instrument(skip(self))]
     pub fn count_bookmarks(&self) -> Result<usize, DbError> {
         let count: i64 = self
             .conn
@@ -502,6 +513,7 @@ impl<'a> BookmarkRepository<'a> {
     ///
     /// This avoids double FTS trigger churn from separate `update()` + `set_summary()` calls.
     /// Updates: suggested_tags, collections, summary_status, and summary.
+    #[instrument(skip(self, bookmark, summary), fields(%id))]
     pub fn update_enrichment(
         &self,
         id: &str,

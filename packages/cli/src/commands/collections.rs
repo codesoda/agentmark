@@ -1,9 +1,12 @@
 //! Collections command: list all collections with bookmark counts.
 
+use tracing::{debug, instrument};
+
 use crate::config::{self, Config};
 use crate::db::{self, BookmarkRepository};
 
 /// Entry point for `agentmark collections`.
+#[instrument]
 pub fn run_collections() -> Result<(), Box<dyn std::error::Error>> {
     let home = config::home_dir()?;
     let _config = Config::load(&home)?;
@@ -12,6 +15,7 @@ pub fn run_collections() -> Result<(), Box<dyn std::error::Error>> {
     let repo = BookmarkRepository::new(&conn);
 
     let collections = repo.list_collections()?;
+    debug!(count = collections.len(), "collections listed");
 
     if collections.is_empty() {
         println!("No collections found.");

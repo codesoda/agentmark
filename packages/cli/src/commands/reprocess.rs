@@ -11,6 +11,8 @@ use std::fmt;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
+use tracing::{debug, instrument};
+
 use crate::agent;
 use crate::bundle::{BodySections, Bundle};
 use crate::cli::ReprocessArgs;
@@ -180,6 +182,7 @@ pub(crate) fn execute_reprocess_with_io(
 
 // ── Single bookmark reprocess ───────────────────────────────────────
 
+#[instrument(skip(config, repo, provider_factory), fields(%id))]
 fn reprocess_single(
     id: &str,
     config: &Config,
@@ -215,6 +218,10 @@ fn reprocess_single(
     let content_changed = old_hash.as_deref() != Some(new_hash);
 
     let metadata_changed = has_metadata_changed(&bookmark, &page_metadata);
+    debug!(
+        content_changed,
+        metadata_changed, "reprocess classification"
+    );
 
     // 5. Update bookmark metadata from fresh fetch
     apply_metadata(&mut bookmark, &page_metadata);

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{debug, instrument};
 
 // ── Error types ─────────────────────────────────────────────────────
 
@@ -166,12 +167,14 @@ pub fn render_config_toml(config: &Config) -> String {
 
 impl Config {
     /// Load config from the standard location under `home`.
+    #[instrument(skip(home), fields(path = %config_file(home).display()))]
     pub fn load(home: &Path) -> Result<Self, ConfigError> {
         let path = config_file(home);
 
         let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug!("config not found");
                 return Err(ConfigError::NotFound { path });
             }
             Err(e) => {
@@ -179,7 +182,10 @@ impl Config {
             }
         };
 
-        toml::from_str(&contents).map_err(|e| ConfigError::ParseError { path, source: e })
+        let config: Self =
+            toml::from_str(&contents).map_err(|e| ConfigError::ParseError { path, source: e })?;
+        debug!(agent = %config.default_agent, storage = %config.storage_path.display(), "config loaded");
+        Ok(config)
     }
 
     /// Save config to the standard location under `home`.
