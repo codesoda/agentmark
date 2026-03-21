@@ -3,6 +3,7 @@
 //! Pure, deterministic URL normalization. No network access, no config, no DB.
 //! Depends only on the `url` crate.
 
+use tracing::{debug, instrument};
 use url::Url;
 
 /// Tracking query parameters to strip during canonicalization.
@@ -34,6 +35,7 @@ const TRACKING_PARAMS: &[&str] = &[
 /// 8. Strip fragment unless it looks like a meaningful anchor
 ///
 /// Returns the canonical URL string or an error for invalid/unsupported URLs.
+#[instrument(fields(%raw))]
 pub fn canonicalize(raw: &str) -> Result<String, CanonicalError> {
     let mut url = Url::parse(raw).map_err(|e| CanonicalError::InvalidUrl {
         url: raw.to_string(),
@@ -100,7 +102,9 @@ pub fn canonicalize(raw: &str) -> Result<String, CanonicalError> {
         url.set_path(path.trim_end_matches('/'));
     }
 
-    Ok(url.to_string())
+    let result = url.to_string();
+    debug!(canonical = %result, "URL canonicalized");
+    Ok(result)
 }
 
 /// Check if a query parameter name is a tracking parameter.

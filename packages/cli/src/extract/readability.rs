@@ -6,6 +6,7 @@
 //! when readability returns too little content.
 
 use scraper::{Html, Selector};
+use tracing::debug;
 
 /// Minimum character threshold for readability output before triggering fallback.
 const MIN_CONTENT_LENGTH: usize = 100;
@@ -44,22 +45,31 @@ pub fn extract_article(html: &str) -> String {
 
     // Try readability crate first
     let readability_result = try_readability(html);
-    if text_length(&readability_result) >= MIN_CONTENT_LENGTH {
+    let readability_len = text_length(&readability_result);
+    if readability_len >= MIN_CONTENT_LENGTH {
+        debug!(chars = readability_len, "readability extraction succeeded");
         return cleanup_html(&readability_result);
     }
 
     // Fallback: try semantic containers
     let fallback = try_semantic_fallback(html);
-    if text_length(&fallback) >= MIN_CONTENT_LENGTH {
+    let fallback_len = text_length(&fallback);
+    if fallback_len >= MIN_CONTENT_LENGTH {
+        debug!(
+            chars = fallback_len,
+            "semantic fallback extraction succeeded"
+        );
         return cleanup_html(&fallback);
     }
 
     // Last resort: use body text if it has any content
     let body = try_body_fallback(html);
     if !body.trim().is_empty() {
+        debug!("body fallback extraction used");
         return cleanup_html(&body);
     }
 
+    debug!("no extractable content found");
     String::new()
 }
 

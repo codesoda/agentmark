@@ -8,11 +8,13 @@ pub use provider::{AgentError, AgentProvider, EnrichmentRequest, EnrichmentRespo
 use claude::ClaudeProvider;
 use codex::CodexProvider;
 use provider::RealRunner;
+use tracing::{debug, instrument};
 
 /// Creates an agent provider based on the configured `default_agent`.
 ///
 /// Normalizes blank `system_prompt` to `None`. Returns a typed error
 /// if the agent name is not recognized.
+#[instrument(skip(system_prompt), fields(%default_agent))]
 pub fn create_provider(
     default_agent: &str,
     system_prompt: Option<&str>,
@@ -22,6 +24,7 @@ pub fn create_provider(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    debug!(normalized = %agent, "creating agent provider");
     match agent.as_str() {
         "claude" => Ok(Box::new(ClaudeProvider::new(sp, Box::new(RealRunner)))),
         "codex" => Ok(Box::new(CodexProvider::new(sp, Box::new(RealRunner)))),

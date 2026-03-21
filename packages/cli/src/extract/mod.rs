@@ -12,6 +12,7 @@ mod readability;
 mod to_markdown;
 
 use sha2::{Digest, Sha256};
+use tracing::{debug, instrument};
 
 /// Result of content extraction from a raw HTML page.
 ///
@@ -36,10 +37,12 @@ pub struct ExtractionResult {
 ///
 /// Never panics on malformed input. Returns empty strings for pages with
 /// no meaningful content.
+#[instrument(skip(html), fields(html_len = html.len()))]
 pub fn extract_content(html: &str) -> ExtractionResult {
     let article_html = readability::extract_article(html);
     let article_markdown = to_markdown::html_to_markdown(&article_html);
     let content_hash = compute_hash(&article_markdown);
+    debug!(markdown_len = article_markdown.len(), hash = %content_hash, "extraction complete");
 
     ExtractionResult {
         article_html,

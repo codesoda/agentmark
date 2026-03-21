@@ -4,6 +4,7 @@
 //! and runs inside a transaction where SQLite allows it.
 
 use rusqlite::Connection;
+use tracing::{debug, info, warn};
 
 use super::DbError;
 
@@ -20,16 +21,27 @@ pub fn ensure_schema(conn: &Connection) -> Result<(), DbError> {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|e| DbError::Migration(format!("failed to read user_version: {e}")))?;
 
+    debug!(version, target = CURRENT_VERSION, "checking schema version");
     if version == CURRENT_VERSION {
         return Ok(());
     }
     if version > CURRENT_VERSION {
+        warn!(
+            version,
+            supported = CURRENT_VERSION,
+            "schema version too new"
+        );
         return Err(DbError::Migration(format!(
             "database version {version} is newer than supported version {CURRENT_VERSION}"
         )));
     }
 
     // Version 0 → 1: initial schema
+    info!(
+        from = version,
+        to = CURRENT_VERSION,
+        "migrating database schema"
+    );
     if version < 1 {
         migrate_v1(conn)?;
     }

@@ -1,4 +1,6 @@
 use super::prompt::build_prompt;
+use tracing::{debug, instrument, warn};
+
 use super::provider::{
     normalize_response, AgentError, AgentProvider, EnrichmentRequest, EnrichmentResponse,
     ProcessOutput, ProcessRunner,
@@ -21,6 +23,7 @@ impl ClaudeProvider {
 }
 
 impl AgentProvider for ClaudeProvider {
+    #[instrument(skip(self, request), fields(url = %request.url))]
     fn enrich(&self, request: &EnrichmentRequest) -> Result<EnrichmentResponse, AgentError> {
         let parts = build_prompt(request, self.system_prompt.as_deref());
 
@@ -54,6 +57,7 @@ impl AgentProvider for ClaudeProvider {
             })?;
 
         if output.exit_code != 0 {
+            warn!(exit_code = output.exit_code, "claude CLI failed");
             let stderr = truncate_stderr(&output.stderr);
             return Err(AgentError::ProcessFailed {
                 provider: "claude",
@@ -61,6 +65,8 @@ impl AgentProvider for ClaudeProvider {
                 stderr,
             });
         }
+
+        debug!("claude CLI returned successfully");
 
         // Claude --output-format json wraps the response in a JSON object
         // with a "result" field containing the text response.

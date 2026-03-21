@@ -14,6 +14,7 @@ pub use metadata::PageMetadata;
 
 use reqwest::redirect::Policy;
 use std::time::Duration;
+use tracing::{debug, instrument, warn};
 use url::Url;
 
 /// Errors that can occur during HTTP fetching.
@@ -73,9 +74,11 @@ struct FetchResponse {
 ///
 /// Returns `(raw_html, PageMetadata)` on success. Only network/HTTP failures produce
 /// errors; metadata parsing is best-effort.
+#[instrument(fields(%url))]
 pub fn fetch_page(url: &str) -> Result<(String, PageMetadata), FetchError> {
     let resp = fetch_html(url, &build_client())?;
     let metadata = metadata::extract_metadata(&resp.html, &resp.final_url);
+    debug!(final_url = %resp.final_url, title = ?metadata.title, "page fetched");
     Ok((resp.html, metadata))
 }
 
@@ -90,6 +93,7 @@ pub fn fetch_page_with_client(
 }
 
 /// Core HTTP fetch: validate URL, execute GET, classify errors, return raw HTML + final URL.
+#[instrument(skip(client), fields(%url))]
 fn fetch_html(url: &str, client: &reqwest::blocking::Client) -> Result<FetchResponse, FetchError> {
     // Parse and validate URL
     let parsed = Url::parse(url).map_err(|e| FetchError::InvalidUrl {
@@ -116,6 +120,7 @@ fn fetch_html(url: &str, client: &reqwest::blocking::Client) -> Result<FetchResp
     // Check status
     let status = response.status();
     let final_url = Url::parse(response.url().as_str()).unwrap_or(parsed);
+    debug!(status = status.as_u16(), final_url = %final_url, "HTTP response");
 
     if !status.is_success() {
         return Err(FetchError::HttpStatus {
@@ -129,12 +134,14 @@ fn fetch_html(url: &str, client: &reqwest::blocking::Client) -> Result<FetchResp
         url: url.to_string(),
         message: e.to_string(),
     })?;
+    debug!(body_bytes = html.len(), "response body read");
 
     Ok(FetchResponse { final_url, html })
 }
 
 /// Classify a `reqwest::Error` into a typed `FetchError`.
 fn classify_reqwest_error(err: reqwest::Error, url: &str) -> FetchError {
+    warn!(url = %url, error = %err, "HTTP request failed");
     if err.is_timeout() {
         FetchError::Timeout {
             url: url.to_string(),

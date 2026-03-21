@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use tracing::{debug, instrument};
+
 use crate::bundle::Bundle;
 use crate::cli::TagArgs;
 use crate::config::{self, Config};
@@ -92,6 +94,7 @@ fn remove_tags(existing: &[String], to_remove: &[String]) -> Vec<String> {
 // ── Entry point ─────────────────────────────────────────────────────
 
 /// Entry point for `agentmark tag <id> <tags...>` / `agentmark tag <id> --remove <tags...>`.
+#[instrument(skip(args), fields(id = %args.id))]
 pub fn run_tag(args: TagArgs) -> Result<(), Box<dyn std::error::Error>> {
     let is_remove = !args.remove.is_empty();
     let raw_tags = if is_remove { &args.remove } else { &args.tags };
@@ -113,6 +116,8 @@ pub fn run_tag(args: TagArgs) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| TagError::NotFound {
             id: args.id.clone(),
         })?;
+
+    debug!(remove = is_remove, tags = ?normalized, "updating tags");
 
     // Mutate tags
     bookmark.user_tags = if is_remove {

@@ -2,6 +2,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use tracing::{debug, instrument};
+
 use chrono::{DateTime, Datelike, Utc};
 
 use crate::fetch::PageMetadata;
@@ -47,6 +49,7 @@ pub struct BundleInput<'a> {
 /// Writes into a temporary staging directory first, then renames to the
 /// final path so that partially written bundles are never visible at the
 /// canonical location.
+#[instrument(skip(storage_root, input), fields(id = %input.bookmark.id))]
 pub fn create_bundle(storage_root: &Path, input: &BundleInput<'_>) -> Result<PathBuf, BundleError> {
     let slug = input.bookmark.slug();
     let final_dir = bundle_dir_path(
@@ -97,6 +100,7 @@ pub fn create_bundle(storage_root: &Path, input: &BundleInput<'_>) -> Result<Pat
         path: final_dir.clone(),
         source,
     })?;
+    debug!(path = %final_dir.display(), "bundle created");
 
     Ok(final_dir)
 }

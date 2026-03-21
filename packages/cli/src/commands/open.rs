@@ -3,6 +3,8 @@
 use std::fmt;
 use std::process::Command as ProcessCommand;
 
+use tracing::{debug, instrument};
+
 use crate::cli::OpenArgs;
 use crate::config::{self, Config};
 use crate::db::{self, BookmarkRepository, DbError};
@@ -88,6 +90,7 @@ fn launch_url(opener: &str, url: &str) -> Result<(), OpenError> {
 // ── Entry point ─────────────────────────────────────────────────────
 
 /// Entry point for `agentmark open <id>`.
+#[instrument(skip(args), fields(id = %args.id))]
 pub fn run_open(args: OpenArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = config::home_dir()?;
     let _config = Config::load(&home)?;
@@ -102,6 +105,7 @@ pub fn run_open(args: OpenArgs) -> Result<(), Box<dyn std::error::Error>> {
         })?;
 
     let opener = resolve_opener()?;
+    debug!(url = %bookmark.url, opener = %opener, "opening in browser");
     launch_url(&opener, &bookmark.url)?;
 
     println!("Opened {} in browser", bookmark.url);

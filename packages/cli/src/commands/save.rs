@@ -10,6 +10,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use tracing::{debug, info, instrument, warn};
+
 use crate::agent;
 use crate::bundle::{BodySections, Bundle};
 use crate::canonical;
@@ -26,6 +28,7 @@ use crate::models::{
 // ── Public entry point ──────────────────────────────────────────────
 
 /// Entry point for `agentmark save` using real environment.
+#[instrument(skip(args), fields(url = %args.url))]
 pub fn run_save(args: SaveArgs) -> Result<(), Box<dyn std::error::Error>> {
     let home = config::home_dir()?;
     let outcome = execute_save(&home, &args)?;
@@ -222,10 +225,12 @@ struct FetchedPage {
     extraction_warning: Option<String>,
 }
 
+#[instrument(skip(url), fields(%url))]
 fn fetch_and_extract(url: &str) -> Result<FetchedPage, SaveError> {
     let (raw_html, metadata) = fetch::fetch_page(url)?;
     let extraction = extract::extract_content(&raw_html);
     let (content_status, extraction_warning) = classify_extraction(&extraction);
+    debug!(content_status = ?content_status, hash = %extraction.content_hash, "fetch and extract complete");
     Ok(FetchedPage {
         raw_html,
         metadata,
@@ -378,6 +383,7 @@ pub(crate) fn execute_save_with_deps(
 }
 
 /// Transport-neutral save pipeline used by both CLI and native-host callers.
+#[instrument(skip(home, req, provider_factory), fields(url = %req.url))]
 pub(crate) fn execute_save_request(
     home: &Path,
     req: &SaveRequest,
@@ -385,6 +391,7 @@ pub(crate) fn execute_save_request(
 ) -> Result<SaveOutcome, SaveError> {
     // 1. Load config
     let config = Config::load(home)?;
+    debug!(agent = %config.default_agent, enrichment = config.enrichment.enabled, "config loaded");
 
     // 2. Open/migrate the SQLite index
     let db_path = config::index_db_path(home);
@@ -401,11 +408,16 @@ pub(crate) fn execute_save_request(
 
     // 4. Canonicalize the requested URL
     let pre_fetch_canonical = canonical::canonicalize(&req.url)?;
+    debug!(canonical = %pre_fetch_canonical, "pre-fetch canonical URL");
 
     // 5. Initial duplicate check by canonical URL
     let initial_duplicate = repo
         .get_by_canonical_url(&pre_fetch_canonical)
         .map_err(SaveError::Db)?;
+    debug!(
+        found = initial_duplicate.is_some(),
+        "initial duplicate check"
+    );
 
     // 6. Fetch page and extract content
     let page = fetch_and_extract(&req.url)?;
@@ -416,6 +428,9 @@ pub(crate) fn execute_save_request(
 
     // 7. Resolve best canonical URL after fetch (may differ from pre-fetch)
     let final_canonical = best_canonical_url(&pre_fetch_canonical, &page.metadata);
+    if final_canonical != pre_fetch_canonical {
+        debug!(pre = %pre_fetch_canonical, post = %final_canonical, "canonical URL changed after fetch");
+    }
 
     // 8. If initial lookup missed, try again with post-fetch canonical
     let existing = if initial_duplicate.is_some() {
@@ -453,6 +468,7 @@ pub(crate) fn execute_save_request(
 
     // 10. Run enrichment (best-effort, after durable save)
     let enrich_eligible = !req.no_enrich && ctx.dedup != DedupResult::Unchanged;
+    debug!(eligible = enrich_eligible, dedup = ?ctx.dedup, "enrichment decision");
 
     if enrich_eligible {
         let outcome = enrich::enrich_bookmark(
@@ -464,20 +480,27 @@ pub(crate) fn execute_save_request(
             provider_factory,
         );
         match outcome {
-            EnrichOutcome::Success => {}
-            EnrichOutcome::Skipped { .. } => {}
+            EnrichOutcome::Success => {
+                info!(id = %ctx.bookmark.id, "enrichment succeeded");
+            }
+            EnrichOutcome::Skipped { ref reason } => {
+                debug!(id = %ctx.bookmark.id, reason = %reason, "enrichment skipped");
+            }
             EnrichOutcome::Failed { warning } => {
+                warn!(id = %ctx.bookmark.id, warning = %warning, "enrichment failed");
                 ctx.warnings.push(warning);
             }
         }
     }
 
+    info!(id = %ctx.bookmark.id, dedup = ?ctx.dedup, "save complete");
     Ok(ctx.into_outcome())
 }
 
 // ── New save path ───────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
+#[instrument(skip_all, fields(%url, %canonical_url))]
 fn handle_new_save(
     config: &Config,
     repo: &BookmarkRepository<'_>,
@@ -533,6 +556,7 @@ fn handle_new_save(
 
 // ── Duplicate save path ─────────────────────────────────────────────
 
+#[instrument(skip_all, fields(id = %existing.id, %canonical_url))]
 fn handle_duplicate(
     config: &Config,
     repo: &BookmarkRepository<'_>,
@@ -545,6 +569,7 @@ fn handle_duplicate(
     let old_hash = existing.content_hash.clone();
     let new_hash = &page.extraction.content_hash;
     let content_changed = old_hash.as_deref() != Some(new_hash);
+    debug!(content_changed, "duplicate detected");
 
     // Find existing bundle on disk
     let bundle = Bundle::find(&config.storage_path, &existing.saved_at, &existing.id)?;
