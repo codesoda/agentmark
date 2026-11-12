@@ -27,7 +27,9 @@ If not found: `curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/ma
 
 ## Configuration
 
-Config lives at `~/.agentmark/config.toml`. Key settings: `default_agent` (claude/codex/pi), `storage_path` (default: `~/agentmark`), `system_prompt` (custom enrichment prompt), `enrichment.enabled` (default: true). Index DB at `~/.agentmark/index.db`.
+Config lives at `~/.agentmark/config.toml`. Key settings: `default_agent` (claude/codex/pi), `storage_path` (where bundles are stored), `system_prompt` (custom enrichment prompt), `enrichment.enabled` (default: true). Index DB at `~/.agentmark/index.db`.
+
+`storage_path` has no fixed location: `agentmark init` suggests `./bookmarks` relative to the directory it runs in, and the user can enter any path. Read `storage_path` from `~/.agentmark/config.toml` before looking for bundles; do not assume a path.
 
 ## CLI Commands
 

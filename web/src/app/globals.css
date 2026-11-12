@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Both themes are defined explicitly and follow the system
+ * colour scheme. There is no toggle, so there is no flash: the browser picks
+ * the right block before first paint.
+ *
+ * Light: warm paper, near-black ink, indigo accent.
+ * Dark: deep graphite, soft white ink, lifted indigo for text accents.
+ */
+:root {
+  color-scheme: light;
+
+  --bg: #f6f5f1;
+  --surface: #ffffff;
+  --raised: #fbfaf7;
+  --sunken: #efede7;
+  --ink: #16161a;
+  --muted: #55544e;
+  --subtle: #6f6d66;
+  --line: #e2dfd6;
+  --line-strong: #cbc7bb;
+
+  --accent: #4f46e5; /* accent text, links, focus */
+  --accent-solid: #4f46e5; /* filled buttons, saved mark */
+  --accent-solid-ink: #ffffff;
+  --accent-soft: #eceafd; /* tinted backgrounds */
+  --accent-line: #c9c5f7;
+  --code-bg: #ebe8e0;
+
+  --danger: #b91c1c;
+  --mark-idle: #6b7280;
+  --mark-saving: #818cf8;
+
+  /* Window chrome used by the demo frames. */
+  --chrome: #ebe9e3;
+  --chrome-ink: #6f6d66;
+  --chrome-field: #ffffff;
+
+  /* Terminal stays dark in both themes, tuned per theme. */
+  --term-bg: #17171b;
+  --term-chrome: #222227;
+  --term-line: #2c2c33;
+  --term-ink: #e6e6ea;
+  --term-muted: #9a9aa6;
+  --term-accent: #a5b4fc;
+  --term-ok: #86efac;
+
+  --shadow-frame: 0 1px 0 rgb(255 255 255 / 0.6) inset, 0 1px 2px rgb(22 22 26 / 0.06),
+    0 12px 32px -12px rgb(22 22 26 / 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --bg: #0c0c0e;
+    --surface: #141417;
+    --raised: #1a1a1e;
+    --sunken: #101013;
+    --ink: #ededf0;
+    --muted: #a6a6b0;
+    --subtle: #8a8a95;
+    --line: #25252b;
+    --line-strong: #34343c;
+
+    --accent: #9ea4ff;
+    --accent-solid: #4f46e5;
+    --accent-solid-ink: #ffffff;
+    --accent-soft: #1b1a33;
+    --accent-line: #34306e;
+    --code-bg: #1e1e23;
+
+    --danger: #f87171;
+    --mark-idle: #6b7280;
+    --mark-saving: #818cf8;
+
+    --chrome: #19191d;
+    --chrome-ink: #8a8a95;
+    --chrome-field: #0f0f12;
+
+    --term-bg: #0f0f12;
+    --term-chrome: #18181c;
+    --term-line: #25252b;
+    --term-ink: #e6e6ea;
+    --term-muted: #8f8f9b;
+    --term-accent: #a5b4fc;
+    --term-ok: #86efac;
+
+    --shadow-frame: 0 0 0 1px rgb(255 255 255 / 0.02) inset, 0 16px 40px -16px rgb(0 0 0 / 0.7);
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-solid: var(--accent-solid);
+  --color-accent-solid-ink: var(--accent-solid-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --color-code-bg: var(--code-bg);
+  --color-danger: var(--danger);
+  --color-chrome: var(--chrome);
+  --color-chrome-ink: var(--chrome-ink);
+  --color-chrome-field: var(--chrome-field);
+  --color-term-bg: var(--term-bg);
+  --color-term-chrome: var(--term-chrome);
+  --color-term-line: var(--term-line);
+  --color-term-ink: var(--term-ink);
+  --color-term-muted: var(--term-muted);
+  --color-term-accent: var(--term-accent);
+  --color-term-ok: var(--term-ok);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --shadow-frame: var(--shadow-frame);
+}
+
+html {
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
+  text-rendering: optimizeLegibility;
+  scroll-padding-top: 5rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--accent-solid);
+  color: var(--accent-solid-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 100;
+  padding: 0.5rem 0.875rem;
+  border-radius: 0.5rem;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.skip-link:focus {
+  top: 1rem;
+}

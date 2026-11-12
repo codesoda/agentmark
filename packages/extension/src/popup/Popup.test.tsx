@@ -16,7 +16,6 @@ vi.mock("../shared/runtime", () => ({
   querySelectedText: vi.fn(),
   queryPageHtml: vi.fn(),
   takePendingSave: vi.fn(),
-  isConnectionError: vi.fn(),
 }));
 
 import Popup from "./Popup";
@@ -29,7 +28,6 @@ import {
   querySelectedText,
   queryPageHtml,
   takePendingSave,
-  isConnectionError,
 } from "../shared/runtime";
 
 const mockQueryActiveTab = vi.mocked(queryActiveTab);
@@ -40,7 +38,6 @@ const mockSaveLastUsedIntent = vi.mocked(saveLastUsedIntent);
 const mockQuerySelectedText = vi.mocked(querySelectedText);
 const mockQueryPageHtml = vi.mocked(queryPageHtml);
 const mockTakePendingSave = vi.mocked(takePendingSave);
-const mockIsConnectionError = vi.mocked(isConnectionError);
 
 function setupSuccessfulQuickSave() {
   mockQueryActiveTab.mockResolvedValue({
@@ -69,7 +66,7 @@ describe("Popup", () => {
     resetChromeMock();
     vi.useFakeTimers();
     vi.spyOn(window, "close").mockImplementation(() => {});
-    mockIsConnectionError.mockReturnValue(false);
+    (chrome.runtime as { id?: string }).id = "ext-id-123";
     setupFormDefaults();
   });
 
@@ -282,7 +279,7 @@ describe("Popup", () => {
     expect(screen.getByText("Unsupported page: chrome://extensions")).toBeDefined();
   });
 
-  it("shows install guidance for connection errors", async () => {
+  it("shows the install prompt instead of Save Failed when the app is not installed", async () => {
     mockQueryActiveTab.mockResolvedValue({
       url: "https://example.com",
       title: "Test",
@@ -290,16 +287,115 @@ describe("Popup", () => {
     });
     mockSendSaveMessage.mockResolvedValue({
       success: false,
-      error: "native messaging host not found",
+      error: "Specified native messaging host not found.",
     });
-    mockIsConnectionError.mockReturnValue(true);
 
     await act(async () => {
       render(<Popup />);
     });
 
-    expect(screen.getByTestId("install-guidance")).toBeDefined();
+    const prompt = screen.getByTestId("install-prompt");
+    expect(prompt.getAttribute("data-problem")).toBe("not_installed");
+    expect(screen.getByText("Install the AgentMark app")).toBeDefined();
+    expect(prompt.textContent).toContain("agentmark install-extension --extension-id ext-id-123");
+    expect(screen.queryByText("Save Failed")).toBeNull();
+    expect(screen.queryByTestId("error-state")).toBeNull();
+    expect(screen.getByTestId("install-prompt-detail").textContent).toBe(
+      "Specified native messaging host not found.",
+    );
+  });
+
+  it("shows the connect step when the host is registered for another extension", async () => {
+    setupSuccessfulQuickSave();
+    mockSendSaveMessage.mockResolvedValue({
+      success: false,
+      error: "Access to the specified native messaging host is forbidden.",
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+
+    expect(screen.getByTestId("install-prompt").getAttribute("data-problem")).toBe("forbidden");
+    expect(screen.queryByText("Save Failed")).toBeNull();
+  });
+
+  it("keeps Save Failed with reload guidance when the native host exits", async () => {
+    setupSuccessfulQuickSave();
+    mockSendSaveMessage.mockResolvedValue({
+      success: false,
+      error: "Native host has exited.",
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+
+    expect(screen.getByTestId("error-state")).toBeDefined();
+    expect(screen.getByText("Save Failed")).toBeDefined();
+    expect(screen.getByTestId("install-prompt").getAttribute("data-problem")).toBe("host_crashed");
     expect(screen.getByText("Couldn't reach AgentMark")).toBeDefined();
+  });
+
+  it("re-sends the save from Try again and shows saved on success", async () => {
+    setupSuccessfulQuickSave();
+    mockQueryPageHtml.mockResolvedValue("<html>tab</html>");
+    mockSendSaveMessage.mockResolvedValueOnce({
+      success: false,
+      error: "Specified native messaging host not found.",
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+
+    expect(mockSendSaveMessage).toHaveBeenCalledTimes(2);
+    expect(mockSendSaveMessage.mock.calls[1]).toEqual([
+      "https://example.com",
+      "Example Page",
+      { page_html: "<html>tab</html>" },
+    ]);
+    // The page was resolved and snapshotted once, not again for the retry.
+    expect(mockQueryActiveTab).toHaveBeenCalledTimes(1);
+    expect(mockQueryPageHtml).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("success-state")).toBeDefined();
+    expect(screen.queryByTestId("install-prompt")).toBeNull();
+  });
+
+  it("retries a pending in-page save as that post, not the tab", async () => {
+    const post = {
+      url: "https://www.linkedin.com/feed/update/urn:li:share:42/",
+      title: "LinkedIn post by Ada Lovelace",
+      page_html: "<html><body>the post</body></html>",
+    };
+    // The service worker hands the pending save over only once.
+    mockTakePendingSave.mockResolvedValueOnce(post).mockResolvedValue(undefined);
+    setupSuccessfulQuickSave();
+    mockSendSaveMessage.mockResolvedValueOnce({
+      success: false,
+      error: "Specified native messaging host not found.",
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+
+    expect(mockTakePendingSave).toHaveBeenCalledTimes(1);
+    expect(mockQueryActiveTab).not.toHaveBeenCalled();
+    expect(mockSendSaveMessage.mock.calls[1]).toEqual([
+      post.url,
+      post.title,
+      { page_html: post.page_html },
+    ]);
+    expect(screen.getByTestId("success-state")).toBeDefined();
+    expect(screen.getByText(post.title)).toBeDefined();
   });
 
   it("does not show install guidance for non-connection errors", async () => {
@@ -312,14 +408,16 @@ describe("Popup", () => {
       success: false,
       error: "Some other error",
     });
-    mockIsConnectionError.mockReturnValue(false);
+    (chrome.runtime as { id?: string }).id = "ext-id-123";
 
     await act(async () => {
       render(<Popup />);
     });
 
     expect(screen.getByTestId("error-state")).toBeDefined();
-    expect(screen.queryByTestId("install-guidance")).toBeNull();
+    expect(screen.getByText("Save Failed")).toBeDefined();
+    expect(screen.getByText("Some other error")).toBeDefined();
+    expect(screen.queryByTestId("install-prompt")).toBeNull();
   });
 
   it("does not dispatch a second save under StrictMode", async () => {

@@ -5,6 +5,7 @@
 
 import type { PendingSave, BookmarkChanges, BookmarkDetail, BookmarkSummary, BookmarkStateFilter, RuntimeMessage, RuntimeResponse, RuntimeSaveMessage, ShowResultResponse, UpdateResultResponse } from "./types";
 import { capturePageHtml, shouldScrollBeforeSnapshot } from "./page-snapshot";
+import { classifyConnectionError } from "./connection";
 
 export interface ActiveTab {
   url: string;
@@ -186,25 +187,11 @@ export async function sendListCollectionsMessage(): Promise<string[]> {
 }
 
 /**
- * Classify whether a save error indicates the native host is not installed/connected,
- * OR the extension's own background service worker is not reachable.
- * Used by popup to show install/reload guidance instead of a bare error.
+ * Whether an error means the native host or the service worker is unreachable.
+ * See `classifyConnectionError` for which kind it is.
  */
 export function isConnectionError(error: string): boolean {
-  const patterns = [
-    "native messaging host not found",
-    "Specified native messaging host not found",
-    "Native host has exited",
-    "disconnected",
-    "not connected",
-    // Popup -> service worker channel failures (MV3 worker dormant/errored)
-    "could not establish connection",
-    "receiving end does not exist",
-    "message port closed",
-    "access to the specified native messaging host is forbidden",
-  ];
-  const lower = error.toLowerCase();
-  return patterns.some((p) => lower.includes(p.toLowerCase()));
+  return classifyConnectionError(error) !== null;
 }
 
 // --- Storage helpers for last-used intent defaults ---

@@ -5,6 +5,8 @@ import {
   sendShowBookmarkMessage,
   sendUpdateBookmarkMessage,
 } from "../shared/runtime";
+import { classifyConnectionError } from "../shared/connection";
+import InstallPrompt from "../shared/InstallPrompt";
 import type { BookmarkSummary, BookmarkDetail as BookmarkDetailType, BookmarkChanges, BookmarkStateFilter } from "../shared/types";
 import BookmarkList, { type FilterValue } from "./BookmarkList";
 import BookmarkDetail from "./BookmarkDetail";
@@ -68,6 +70,12 @@ export default function SidePanel() {
     window.addEventListener("focus", handleFocus);
     return () => window.removeEventListener("focus", handleFocus);
   }, [loadBookmarks, activeFilter]);
+
+  const handleRetry = useCallback(() => {
+    loadBookmarks(activeFilter);
+  }, [loadBookmarks, activeFilter]);
+
+  const connectionProblem = error ? classifyConnectionError(error) : null;
 
   const handleFilterChange = useCallback((filter: FilterValue) => {
     setActiveFilter(filter);
@@ -143,6 +151,10 @@ export default function SidePanel() {
     setUpdating(false);
   }, [selectedBookmarkId, updating, activeFilter]);
 
+  const handleRetryDetail = useCallback(() => {
+    if (selectedBookmarkId) handleSelect(selectedBookmarkId);
+  }, [selectedBookmarkId, handleSelect]);
+
   const handleBackToList = useCallback(() => {
     setView("list");
     setSelectedBookmarkId(null);
@@ -152,6 +164,9 @@ export default function SidePanel() {
   }, []);
 
   if (view === "detail" && selectedBookmarkId) {
+    const detailProblem = detailError ? classifyConnectionError(detailError) : null;
+    const mutationProblem = mutationError ? classifyConnectionError(mutationError) : null;
+
     if (detailLoading) {
       return (
         <div className="p-4" data-testid="detail-loading">
@@ -179,7 +194,11 @@ export default function SidePanel() {
           >
             &larr; Back to list
           </button>
-          <p className="text-sm text-red-600">{detailError}</p>
+          {detailProblem ? (
+            <InstallPrompt problem={detailProblem} onRetry={handleRetryDetail} detail={detailError} />
+          ) : (
+            <p className="text-sm text-red-600">{detailError}</p>
+          )}
         </div>
       );
     }
@@ -187,11 +206,15 @@ export default function SidePanel() {
     if (selectedBookmark) {
       return (
         <div data-testid="detail-view">
-          {mutationError && (
+          {mutationProblem ? (
+            <div className="px-4 pt-3">
+              <InstallPrompt problem={mutationProblem} onRetry={handleRetryDetail} detail={mutationError ?? undefined} />
+            </div>
+          ) : mutationError ? (
             <div className="px-4 pt-2">
               <p className="text-xs text-red-600" data-testid="mutation-error">{mutationError}</p>
             </div>
-          )}
+          ) : null}
           <BookmarkDetail
             bookmark={selectedBookmark}
             collections={collections}
@@ -212,6 +235,10 @@ export default function SidePanel() {
       {loading && bookmarks.length === 0 ? (
         <div className="flex-1 flex items-center justify-center" data-testid="loading-state">
           <p className="text-sm text-gray-500">Loading bookmarks...</p>
+        </div>
+      ) : connectionProblem && bookmarks.length === 0 ? (
+        <div className="flex-1 overflow-y-auto p-4">
+          <InstallPrompt problem={connectionProblem} onRetry={handleRetry} detail={error ?? undefined} />
         </div>
       ) : error && bookmarks.length === 0 ? (
         <div className="flex-1 flex items-center justify-center p-4" data-testid="error-state">

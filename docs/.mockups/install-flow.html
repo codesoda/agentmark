@@ -1,0 +1,59 @@
+<!doctype html><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;padding:28px;background:#e5e7eb;font:13px/1.45 -apple-system,system-ui,sans-serif;color:#111827}
+.row{display:flex;gap:28px;align-items:flex-start}.col{width:320px}
+.cap{font-size:12px;color:#4b5563;margin:0 0 8px;font-weight:600}.note{font-size:11.5px;color:#6b7280;margin:8px 2px 0}
+.pop{width:320px;background:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:16px}
+h1{font-size:15px;margin:0;font-weight:650}.head{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+p{margin:0}.muted{color:#4b5563}.small{font-size:11.5px;color:#6b7280}
+.opt{display:flex;align-items:center;gap:10px;width:100%;border:1px solid #e5e7eb;border-radius:8px;padding:9px 10px;margin-top:8px;background:#fff;text-align:left;font:inherit}
+.opt b{display:block;font-weight:600}.opt span{font-size:11.5px;color:#6b7280}.opt.sel{border-color:#4f46e5;background:#eef2ff}
+.chev{margin-left:auto;color:#9ca3af}.tag{margin-left:auto;font-size:10.5px;background:#4f46e5;color:#fff;border-radius:99px;padding:2px 7px}
+.os{width:22px;height:22px;border-radius:5px;background:#f3f4f6;display:grid;place-items:center;font-size:12px;color:#374151;flex:none}
+.back{font-size:12px;color:#4f46e5;margin-bottom:8px}
+.step{display:flex;gap:8px;margin-top:12px}.n{width:18px;height:18px;border-radius:99px;background:#eef2ff;color:#4f46e5;font-size:11px;font-weight:700;display:grid;place-items:center;flex:none;margin-top:1px}
+.code{margin-top:6px;border:1px solid #e5e7eb;background:#f9fafb;border-radius:7px;padding:8px 9px;font:11px/1.5 ui-monospace,Menlo,monospace;word-break:break-all;position:relative;padding-right:54px}
+.copy{position:absolute;right:6px;top:6px;font:10.5px -apple-system,sans-serif;border:1px solid #d1d5db;background:#fff;border-radius:5px;padding:2px 7px;color:#374151}
+.btn{margin-top:14px;width:100%;background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:9px;font:600 13px -apple-system,sans-serif}
+.wait{margin-top:14px;display:flex;gap:8px;align-items:center;border:1px dashed #c7d2fe;border-radius:8px;padding:9px 10px;color:#4338ca;font-size:12px}
+.dot{width:8px;height:8px;border-radius:99px;background:#818cf8}
+.ok{display:flex;gap:8px;align-items:center}.foot{margin-top:12px;padding-top:10px;border-top:1px solid #f3f4f6;font-size:11.5px;color:#6b7280}a{color:#4f46e5;text-decoration:none}
+.warn{margin-top:10px;border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:9px 10px;font-size:12px;color:#92400e}
+</style>
+<svg width="0" height="0" style="position:absolute"><defs>
+<g id="m"><rect x="1.5" y="1.5" width="21" height="21" rx="2.784"/><path fill="#fff" d="M9.057 5.795H14.943A1.67 1.67 0 0 1 16.614 7.466V17.695Q16.614 18.205 16.105 18.205H15.834Q15.58 18.205 15.401 18.026L12 14.625L8.599 18.026Q8.42 18.205 8.166 18.205H7.895Q7.386 18.205 7.386 17.695V7.466A1.67 1.67 0 0 1 9.057 5.795Z"/></g></defs></svg>
+<div class="row">
+<div class="col"><p class="cap">1. Click the toolbar icon, app not found</p><div class="pop">
+ <div class="head"><svg width="22" height="22" viewBox="0 0 24 24" fill="#6b7280"><use href="#m"/><path d="M12 8.86V11.56M10.65 10.21H13.35" stroke="#6b7280" stroke-width="1.3" stroke-linecap="round"/></svg><h1>Finish setting up AgentMark</h1></div>
+ <p class="muted">The extension saves pages through the AgentMark app on your computer. Pick your system to install it.</p>
+ <div class="opt sel"><div class="os"></div><div><b>Mac, Apple Silicon</b><span>M1 or later</span></div><span class="tag">Detected</span></div>
+ <div class="opt"><div class="os"></div><div><b>Mac, Intel</b><span>Builds from source</span></div><span class="chev">›</span></div>
+ <div class="opt"><div class="os">🐧</div><div><b>Linux</b><span>Builds from source</span></div><span class="chev">›</span></div>
+ <div class="opt"><div class="os">⊞</div><div><b>Windows</b><span>Not supported yet</span></div><span class="chev">›</span></div>
+ <div class="foot">Already installed? <a>Check again</a> · <a>Setup guide</a></div>
+</div><p class="note">Your system is detected and preselected; any row can be chosen.</p></div>
+
+<div class="col"><p class="cap">2. Pick a platform: one command</p><div class="pop">
+ <div class="back">‹ All platforms</div>
+ <div class="head"><h1>Install on Mac, Apple Silicon</h1></div>
+ <div class="step"><div class="n">1</div><div style="flex:1"><p>Open <b>Terminal</b> and paste this:</p>
+  <div class="code">curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash -s -- --extension-id kdfhgpjmlecnoaipbhkolgbmaeidcjdn<span class="copy">Copy</span></div>
+  <p class="small" style="margin-top:5px">It downloads the app and connects it to this extension. Nothing else to type.</p></div></div>
+ <div class="step"><div class="n">2</div><div><p>Come back here. This updates by itself.</p></div></div>
+ <div class="wait"><span class="dot"></span>Waiting for the app…</div>
+ <div class="foot">Not working? <a>Check again</a> · <a>Setup guide</a></div>
+</div><p class="note">The extension's own ID is filled into the command, so the separate "connect" step goes away.</p></div>
+
+<div class="col"><p class="cap">3. App found: straight into the save</p><div class="pop">
+ <div class="ok"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4f46e5"><use href="#m"/><path d="M10.4 10.31L11.55 11.41L13.7 9.06" stroke="#4f46e5" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><h1>AgentMark is ready</h1></div>
+ <p class="muted" style="margin-top:6px">Connected to AgentMark 0.2.6.</p>
+ <button class="btn">Save this page</button>
+ <div class="foot">Next: run <span style="font-family:ui-monospace,monospace">agentmark init</span> to pick where bookmarks live and which agent writes summaries.</div>
+</div>
+<p class="cap" style="margin-top:22px">2b. A platform without a download</p><div class="pop">
+ <div class="back">‹ All platforms</div>
+ <div class="head"><h1>Install on Linux</h1></div>
+ <p class="muted">There is no ready-made download for Linux yet. You can build it; you need Rust and Node.js.</p>
+ <div class="code" style="margin-top:10px">git clone https://github.com/codesoda/agentmark &amp;&amp; cd agentmark &amp;&amp; ./install.sh --extension-id kdfhgpjm…<span class="copy">Copy</span></div>
+ <div class="warn">Windows shows a short "not supported yet" note here with a link to follow progress.</div>
+</div></div>
+</div>
