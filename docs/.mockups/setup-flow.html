@@ -1,0 +1,76 @@
+<!doctype html><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;padding:28px;background:#e5e7eb;font:13px/1.45 -apple-system,system-ui,sans-serif;color:#111827}
+.row{display:flex;gap:28px;align-items:flex-start}.col{width:320px}
+.cap{font-size:12px;color:#4b5563;margin:0 0 8px;font-weight:600}.note{font-size:11.5px;color:#6b7280;margin:8px 2px 0}
+.pop{width:320px;background:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:16px}
+h1{font-size:15px;margin:0;font-weight:650}.head{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+p{margin:0}.muted{color:#4b5563}.small{font-size:11.5px;color:#6b7280}
+.opt{display:flex;align-items:center;gap:10px;width:100%;border:1px solid #e5e7eb;border-radius:8px;padding:9px 10px;margin-top:8px;background:#fff;text-align:left;font:inherit}
+.opt b{display:block;font-weight:600}.opt span{font-size:11.5px;color:#6b7280}.opt.sel{border-color:#4f46e5;background:#eef2ff}
+.chev{margin-left:auto;color:#9ca3af}.tag{margin-left:auto;font-size:10.5px;background:#4f46e5;color:#fff;border-radius:99px;padding:2px 7px}
+.os{width:22px;height:22px;border-radius:5px;background:#f3f4f6;display:grid;place-items:center;font-size:12px;color:#374151;flex:none}
+.back{font-size:12px;color:#4f46e5;margin-bottom:8px}
+.step{display:flex;gap:8px;margin-top:12px}.n{width:18px;height:18px;border-radius:99px;background:#eef2ff;color:#4f46e5;font-size:11px;font-weight:700;display:grid;place-items:center;flex:none;margin-top:1px}
+.code{margin-top:6px;border:1px solid #e5e7eb;background:#f9fafb;border-radius:7px;padding:8px 9px;font:11px/1.5 ui-monospace,Menlo,monospace;word-break:break-all;position:relative;padding-right:54px}
+.copy{position:absolute;right:6px;top:6px;font:10.5px -apple-system,sans-serif;border:1px solid #d1d5db;background:#fff;border-radius:5px;padding:2px 7px;color:#374151}
+.btn{margin-top:14px;width:100%;background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:9px;font:600 13px -apple-system,sans-serif}
+.wait{margin-top:14px;display:flex;gap:8px;align-items:center;border:1px dashed #c7d2fe;border-radius:8px;padding:9px 10px;color:#4338ca;font-size:12px}
+.dot{width:8px;height:8px;border-radius:99px;background:#818cf8}
+.ok{display:flex;gap:8px;align-items:center}.foot{margin-top:12px;padding-top:10px;border-top:1px solid #f3f4f6;font-size:11.5px;color:#6b7280}a{color:#4f46e5;text-decoration:none}
+.warn{margin-top:10px;border:1px solid #fde68a;background:#fffbeb;border-radius:8px;padding:9px 10px;font-size:12px;color:#92400e}
+
+.field{margin-top:12px}.lab{font-weight:600;font-size:12.5px}.hint{font-size:11.5px;color:#6b7280;margin-top:2px}
+.inp{margin-top:6px;display:flex;gap:6px}.inp div{flex:1;border:1px solid #d1d5db;border-radius:7px;padding:7px 9px;font:11.5px ui-monospace,Menlo,monospace;background:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inp button,.ghost{border:1px solid #d1d5db;background:#fff;border-radius:7px;padding:6px 10px;font:12px -apple-system,sans-serif;color:#374151}
+.radio{display:flex;align-items:center;gap:9px;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-top:6px}.radio.sel{border-color:#4f46e5;background:#eef2ff}
+.rb{width:14px;height:14px;border-radius:99px;border:1.5px solid #9ca3af;flex:none}.sel .rb{border:4px solid #4f46e5}
+.found{margin-left:auto;font-size:10.5px;color:#15803d;background:#dcfce7;border-radius:99px;padding:2px 7px}.missing{margin-left:auto;font-size:10.5px;color:#6b7280;background:#f3f4f6;border-radius:99px;padding:2px 7px}
+.tog{display:flex;align-items:center;gap:10px;margin-top:12px}.sw{width:30px;height:18px;border-radius:99px;background:#4f46e5;position:relative;flex:none}.sw:after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:99px;background:#fff}
+.menu{width:230px;background:#fff;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:5px;font-size:12.5px}.mi{padding:6px 10px;border-radius:5px}.mi.hi{background:#eef2ff;color:#3730a3;font-weight:600}.sep{height:1px;background:#f3f4f6;margin:4px 0}.mi.dim{color:#9ca3af}
+.panel{width:340px;background:#fff;border-left:1px solid #d1d5db;box-shadow:0 8px 28px rgba(0,0,0,.18);min-height:640px;border-radius:4px}
+.ph{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #f3f4f6}.tabs{margin-left:auto;display:flex;gap:4px;font-size:12px}.tabs span{padding:4px 9px;border-radius:6px;color:#6b7280}.tabs .on{background:#eef2ff;color:#3730a3;font-weight:600}
+.pb{padding:4px 16px 16px}.sec{margin-top:16px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b7280;font-weight:600}
+.kv{display:flex;justify-content:space-between;font-size:12px;margin-top:7px}.kv span:last-child{color:#4b5563;font-family:ui-monospace,monospace;font-size:11px}
+.ta{margin-top:6px;border:1px solid #d1d5db;border-radius:7px;padding:7px 9px;font-size:12px;color:#6b7280;height:52px}
+.chip{display:inline-block;border:1px solid #e5e7eb;border-radius:99px;padding:2px 8px;font:11px ui-monospace,monospace;margin:6px 4px 0 0}
+</style><svg width="0" height="0" style="position:absolute"><defs><g id="m"><rect x="1.5" y="1.5" width="21" height="21" rx="2.784"/><path fill="#fff" d="M9.057 5.795H14.943A1.67 1.67 0 0 1 16.614 7.466V17.695Q16.614 18.205 16.105 18.205H15.834Q15.58 18.205 15.401 18.026L12 14.625L8.599 18.026Q8.42 18.205 8.166 18.205H7.895Q7.386 18.205 7.386 17.695V7.466A1.67 1.67 0 0 1 9.057 5.795Z"/></g></defs></svg><div class="row">
+<div class="col"><p class="cap">A. App not found: detected platform first</p><div class="pop">
+ <div class="head"><svg width="22" height="22" viewBox="0 0 24 24" fill="#6b7280"><use href="#m"/></svg><h1>Finish setting up AgentMark</h1></div>
+ <p class="muted">The extension saves pages through the AgentMark app on your computer.</p>
+ <div class="opt sel"><div class="os">M</div><div><b>Mac, Apple Silicon</b><span>Your computer · one command</span></div><span class="chev" style="color:#4f46e5">›</span></div>
+ <p class="small" style="margin-top:12px">Other platforms</p>
+ <div class="opt"><div class="os">M</div><div><b>Mac, Intel</b><span>Builds from source</span></div><span class="chev">›</span></div>
+ <div class="opt"><div class="os">L</div><div><b>Linux</b><span>Builds from source</span></div><span class="chev">›</span></div>
+ <div class="opt"><div class="os">W</div><div><b>Windows</b><span>Not supported yet</span></div><span class="chev">›</span></div>
+ <div class="foot">Already installed? <a>Check again</a></div>
+</div><p class="note">On a Linux machine, Linux is the top row, and so on.</p></div>
+
+<div class="col"><p class="cap">B. App found, not set up yet: setup in the extension</p><div class="pop">
+ <div class="head"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4f46e5"><use href="#m"/></svg><h1>Set up AgentMark</h1></div>
+ <p class="muted">The app is installed (0.2.7). Two choices and you're done.</p>
+ <div class="field"><div class="lab">Where should bookmarks live?</div><div class="hint">A normal folder. One sub-folder per saved page.</div>
+  <div class="inp"><div>~/Documents/AgentMark</div><button>Choose…</button></div></div>
+ <div class="field"><div class="lab">Which agent writes summaries?</div><div class="hint">AgentMark uses one you already have.</div>
+  <div class="radio sel"><span class="rb"></span>Claude Code<span class="found">Found</span></div>
+  <div class="radio"><span class="rb"></span>Codex<span class="found">Found</span></div>
+  <div class="radio"><span class="rb"></span>pi<span class="missing">Not installed</span></div></div>
+ <div class="tog"><span class="sw"></span><div><div class="lab">Write a summary and tags after each save</div><div class="hint">Sends the page text to your agent's provider.</div></div></div>
+ <button class="btn">Finish and save this page</button>
+ <div class="foot">You can change all of this later in Settings.</div>
+</div><p class="note">Replaces running <b>agentmark init</b> in a terminal.</p></div>
+
+<div class="col" style="width:360px"><p class="cap">C. Right-click the toolbar icon</p>
+ <div class="menu"><div class="mi dim">AgentMark</div><div class="sep"></div><div class="mi">Open side panel</div><div class="mi hi">Settings</div><div class="sep"></div><div class="mi dim">Pin · Remove from Chrome…</div></div>
+ <p class="cap" style="margin-top:20px">D. Settings view in the side panel</p>
+ <div class="panel"><div class="ph"><svg width="22" height="22" viewBox="0 0 24 24" fill="#4f46e5"><use href="#m"/></svg><b style="font-size:14px">AgentMark</b><div class="tabs"><span>Bookmarks</span><span class="on">Settings</span></div></div>
+ <div class="pb">
+  <div class="sec">App</div><div class="kv"><span>Connected</span><span>agentmark 0.2.7</span></div><div class="kv"><span>Bookmarks</span><span>674</span></div>
+  <div class="sec">Storage</div><div class="inp"><div>~/Documents/AgentMark</div><button>Choose…</button></div><div class="hint">Changing this does not move existing bookmarks.</div>
+  <div class="sec">Summaries</div>
+  <div class="tog" style="margin-top:8px"><span class="sw"></span><div class="lab">Write a summary and tags after each save</div></div>
+  <div class="radio sel"><span class="rb"></span>Claude Code<span class="found">Found</span></div><div class="radio"><span class="rb"></span>Codex<span class="found">Found</span></div><div class="radio"><span class="rb"></span>pi<span class="missing">Not installed</span></div>
+  <div class="field"><div class="lab">Instructions for summaries</div><div class="ta">Optional. For example: "Keep summaries under 60 words."</div></div>
+  <div class="sec">Capture the page from the browser on</div><div><span class="chip">linkedin.com</span><span class="chip">x.com</span><span class="chip">news.ycombinator.com</span><span class="chip">+ Add site</span></div>
+  <button class="btn" style="margin-top:18px">Save changes</button>
+ </div></div></div>
+</div>
