@@ -88,7 +88,16 @@ pub(crate) fn enrich_bookmark(
 
     // Call provider
     debug!("calling enrichment provider");
-    let response = match provider.enrich(&request) {
+    let result = provider.enrich(&request);
+
+    // The provider call can take a while, and when it runs in the background the
+    // user may have edited tags or notes meanwhile. Apply the result to the
+    // current record, not to the copy loaded before the call.
+    if let Ok(Some(current)) = repo.get_by_id(&bookmark.id) {
+        *bookmark = current;
+    }
+
+    let response = match result {
         Ok(r) => r,
         Err(e) => {
             warn!("enrichment provider call failed");
@@ -303,6 +312,7 @@ mod tests {
             storage_path: storage_path.to_path_buf(),
             system_prompt: None,
             log_level: None,
+            snapshot_sites: Vec::new(),
             enrichment: crate::config::EnrichmentConfig { enabled: true },
         }
     }
@@ -357,6 +367,13 @@ mod tests {
     }
 
     impl AgentProvider for FakeProvider {
+        fn render_article(
+            &self,
+            _request: &crate::agent::ArticleRequest,
+        ) -> Result<String, AgentError> {
+            Ok("# Rendered\n".to_string())
+        }
+
         fn enrich(&self, _request: &EnrichmentRequest) -> Result<EnrichmentResponse, AgentError> {
             match &self.response {
                 Ok(r) => Ok(r.clone()),

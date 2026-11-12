@@ -82,6 +82,17 @@ pub fn fetch_page(url: &str) -> Result<(String, PageMetadata), FetchError> {
     Ok((resp.html, metadata))
 }
 
+/// Like [`fetch_page`], also returning the URL the response finally came from.
+///
+/// Callers compare it with the requested URL to notice redirects to a
+/// different page, such as a login wall answering with HTTP 200.
+pub fn fetch_page_with_final_url(url: &str) -> Result<(String, PageMetadata, Url), FetchError> {
+    let resp = fetch_html(url, &build_client())?;
+    let metadata = metadata::extract_metadata(&resp.html, &resp.final_url);
+    debug!(final_url = %resp.final_url, title = ?metadata.title, "page fetched");
+    Ok((resp.html, metadata, resp.final_url))
+}
+
 /// Fetch with a custom client. Useful for testing with short timeouts or custom policies.
 pub fn fetch_page_with_client(
     url: &str,

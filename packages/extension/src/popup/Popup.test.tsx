@@ -14,6 +14,8 @@ vi.mock("../shared/runtime", () => ({
   loadLastUsedIntent: vi.fn(),
   saveLastUsedIntent: vi.fn(),
   querySelectedText: vi.fn(),
+  queryPageHtml: vi.fn(),
+  takePendingSave: vi.fn(),
   isConnectionError: vi.fn(),
 }));
 
@@ -25,6 +27,8 @@ import {
   loadLastUsedIntent,
   saveLastUsedIntent,
   querySelectedText,
+  queryPageHtml,
+  takePendingSave,
   isConnectionError,
 } from "../shared/runtime";
 
@@ -34,6 +38,8 @@ const mockSendListCollections = vi.mocked(sendListCollectionsMessage);
 const mockLoadLastUsedIntent = vi.mocked(loadLastUsedIntent);
 const mockSaveLastUsedIntent = vi.mocked(saveLastUsedIntent);
 const mockQuerySelectedText = vi.mocked(querySelectedText);
+const mockQueryPageHtml = vi.mocked(queryPageHtml);
+const mockTakePendingSave = vi.mocked(takePendingSave);
 const mockIsConnectionError = vi.mocked(isConnectionError);
 
 function setupSuccessfulQuickSave() {
@@ -53,6 +59,8 @@ function setupFormDefaults() {
   mockSendListCollections.mockResolvedValue(["reading", "work"]);
   mockLoadLastUsedIntent.mockResolvedValue({ tags: ["saved-tag"], collection: "reading" });
   mockQuerySelectedText.mockResolvedValue("selected content");
+  mockQueryPageHtml.mockResolvedValue(undefined);
+  mockTakePendingSave.mockResolvedValue(undefined);
   mockSaveLastUsedIntent.mockResolvedValue(undefined);
 }
 
@@ -116,6 +124,82 @@ describe("Popup", () => {
     expect(screen.getByText("ID: bm_abc123")).toBeDefined();
   });
 
+  it("saves the item an in-page button prepared instead of the active tab", async () => {
+    mockTakePendingSave.mockResolvedValue({
+      url: "https://www.linkedin.com/feed/update/urn:li:share:42/",
+      title: "LinkedIn post by Ada Lovelace",
+      page_html: "<html><body>the post</body></html>",
+    });
+    mockSendSaveMessage.mockResolvedValue({
+      success: true,
+      data: { type: "save_result", id: "bm_1", path: "/tmp", status: "created" },
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+
+    expect(mockQueryActiveTab).not.toHaveBeenCalled();
+    expect(mockQueryPageHtml).not.toHaveBeenCalled();
+    expect(mockSendSaveMessage).toHaveBeenCalledWith(
+      "https://www.linkedin.com/feed/update/urn:li:share:42/",
+      "LinkedIn post by Ada Lovelace",
+      { page_html: "<html><body>the post</body></html>" },
+    );
+    expect(screen.getByText("LinkedIn post by Ada Lovelace")).toBeDefined();
+  });
+
+  it("re-saves the prepared item, not the tab, when tags are added", async () => {
+    mockTakePendingSave.mockResolvedValue({
+      url: "https://www.linkedin.com/feed/update/urn:li:share:42/",
+      title: "LinkedIn post by Ada Lovelace",
+      page_html: "<html><body>the post</body></html>",
+    });
+    mockSendSaveMessage.mockResolvedValue({
+      success: true,
+      data: { type: "save_result", id: "bm_1", path: "/tmp", status: "created" },
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("more-options-btn"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("form-submit"));
+    });
+
+    expect(mockQuerySelectedText).not.toHaveBeenCalled();
+    const [url, , options] = mockSendSaveMessage.mock.calls[1];
+    expect(url).toBe("https://www.linkedin.com/feed/update/urn:li:share:42/");
+    expect(options!.page_html).toBe("<html><body>the post</body></html>");
+  });
+
+  it("sends the tab's HTML snapshot with the quick-save", async () => {
+    mockQueryActiveTab.mockResolvedValue({
+      url: "https://www.linkedin.com/in/someone/",
+      title: "Someone | LinkedIn",
+      id: 7,
+    });
+    mockQueryPageHtml.mockResolvedValue("<html><body>profile</body></html>");
+    mockSendSaveMessage.mockResolvedValue({
+      success: true,
+      data: { type: "save_result", id: "bm_1", path: "/tmp", status: "created" },
+    });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+
+    expect(mockQueryPageHtml).toHaveBeenCalledWith(7, "https://www.linkedin.com/in/someone/");
+    expect(mockSendSaveMessage).toHaveBeenCalledWith(
+      "https://www.linkedin.com/in/someone/",
+      "Someone | LinkedIn",
+      { page_html: "<html><body>profile</body></html>" },
+    );
+  });
+
   it("sends correct save payload", async () => {
     mockQueryActiveTab.mockResolvedValue({
       url: "https://example.com",
@@ -131,7 +215,9 @@ describe("Popup", () => {
       render(<Popup />);
     });
 
-    expect(mockSendSaveMessage).toHaveBeenCalledWith("https://example.com", "Test Title");
+    expect(mockSendSaveMessage).toHaveBeenCalledWith("https://example.com", "Test Title", {
+      page_html: undefined,
+    });
     expect(mockSendSaveMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -213,7 +299,7 @@ describe("Popup", () => {
     });
 
     expect(screen.getByTestId("install-guidance")).toBeDefined();
-    expect(screen.getByText("Native host not connected")).toBeDefined();
+    expect(screen.getByText("Couldn't reach AgentMark")).toBeDefined();
   });
 
   it("does not show install guidance for non-connection errors", async () => {

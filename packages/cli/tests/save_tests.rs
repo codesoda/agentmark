@@ -336,6 +336,35 @@ fn save_http_error_fails() {
     );
 }
 
+/// Sites that block automated clients (LinkedIn → HTTP 999) are still bookmarked,
+/// just without page content.
+#[test]
+fn save_access_blocked_saves_without_content_and_warns() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server.mock("GET", "/in/someone").with_status(999).create();
+
+    let url = format!("{}/in/someone", server.url());
+    let output = agentmark_cmd(&home)
+        .args(["save", &url])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stdout.contains("Saved bookmark am_"), "stdout: {stdout}");
+    assert!(
+        stderr.contains("HTTP 999") && stderr.contains("saved without page content"),
+        "stderr: {stderr}"
+    );
+    assert_eq!(find_bundle_dirs(&storage).len(), 1);
+}
+
 // ── Cross-store consistency ─────────────────────────────────────────
 
 #[test]
@@ -691,6 +720,37 @@ fn resave_with_new_note_replaces_existing() {
         .query_row("SELECT note FROM bookmarks LIMIT 1", [], |row| row.get(0))
         .unwrap();
     assert_eq!(note.as_deref(), Some("updated note"));
+}
+
+// ── URL aliases ─────────────────────────────────────────────────────
+
+#[test]
+fn save_records_requested_url_and_page_canonical() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    // sample_html declares <link rel="canonical" href="https://example.com/canonical">.
+    let _mock = server
+        .mock("GET", "/feed/item")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_body(sample_html())
+        .create();
+
+    let url = format!("{}/feed/item?utm_source=x", server.url());
+    agentmark_cmd(&home).args(["save", &url]).assert().success();
+
+    let conn = agentmark::db::open_and_migrate(&home.join(".agentmark/index.db")).unwrap();
+    let repo = agentmark::db::BookmarkRepository::new(&conn);
+    let requested = agentmark::canonical::canonicalize(&url).unwrap();
+    let page_canonical = "https://example.com/canonical".to_string();
+    let saved = repo
+        .saved_urls(&[requested.clone(), page_canonical.clone()])
+        .unwrap();
+    assert!(saved.contains(&requested), "saved: {saved:?}");
+    assert!(saved.contains(&page_canonical), "saved: {saved:?}");
 }
 
 // ── Dedup: post-fetch canonical rerouting ────────────────────────────

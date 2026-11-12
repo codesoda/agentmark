@@ -1,10 +1,13 @@
 //! Bookmark repository — CRUD, list, search, and collection queries.
 //!
-//! All SQL values are parameter-bound. FTS synchronization is handled by
-//! database triggers (see `schema.rs`), so repository methods only touch the
-//! main `bookmarks` table.
+//! All SQL values are parameter-bound. FTS synchronization and URL alias
+//! cleanup on delete are handled by database triggers (see `schema.rs`).
+//! `insert` and `update` also record the bookmark's own canonical URL in
+//! `bookmark_urls`, so that table stays complete without callers remembering.
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::collections::HashSet;
+
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use tracing::instrument;
 
 use crate::models::Bookmark;
@@ -28,6 +31,9 @@ const INSERT_COLS: &str = "id, url, canonical_url, title, description, author, s
 const SELECT_COLS: &str = "id, url, canonical_url, title, description, author, site_name, \
     published_at, saved_at, capture_source, user_tags, suggested_tags, collections, \
     note, action_prompt, state, content_status, summary_status, content_hash, schema_version";
+
+/// URLs per `saved_urls` query; well under SQLite's bound-parameter limit.
+const SAVED_URLS_CHUNK: usize = 200;
 
 /// Table-qualified SELECT columns for JOINs (avoids ambiguity with FTS columns).
 const QUALIFIED_SELECT_COLS: &str = "bookmarks.id, bookmarks.url, bookmarks.canonical_url, \
@@ -233,6 +239,7 @@ impl<'a> BookmarkRepository<'a> {
                 bookmark.schema_version,
             ],
         )?;
+        self.add_url_alias(&bookmark.id, &bookmark.canonical_url)?;
         Ok(())
     }
 
@@ -273,7 +280,40 @@ impl<'a> BookmarkRepository<'a> {
                 bookmark.schema_version,
             ],
         )?;
+        if updated > 0 {
+            self.add_url_alias(&bookmark.id, &bookmark.canonical_url)?;
+        }
         Ok(updated > 0)
+    }
+
+    /// Record that bookmark `id` has been seen under `canonical_url`.
+    /// Recording the same pair twice is a no-op.
+    #[instrument(skip(self), fields(%id, %canonical_url))]
+    pub fn add_url_alias(&self, id: &str, canonical_url: &str) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO bookmark_urls (canonical_url, bookmark_id) VALUES (?1, ?2)",
+            params![canonical_url, id],
+        )?;
+        Ok(())
+    }
+
+    /// Return the subset of `canonical_urls` that any bookmark has been seen under.
+    #[instrument(skip(self, canonical_urls), fields(count = canonical_urls.len()))]
+    pub fn saved_urls(&self, canonical_urls: &[String]) -> Result<HashSet<String>, DbError> {
+        let mut saved = HashSet::new();
+        for chunk in canonical_urls.chunks(SAVED_URLS_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT DISTINCT canonical_url FROM bookmark_urls \
+                 WHERE canonical_url IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(chunk.iter()), |row| row.get(0))?;
+            for row in rows {
+                saved.insert(row?);
+            }
+        }
+        Ok(saved)
     }
 
     /// Get a bookmark by its ID.
@@ -707,10 +747,143 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_url_aliases() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm = sample_bookmark("https://example.com/a", "A");
+        repo.insert(&bm).unwrap();
+        repo.add_url_alias(&bm.id, "https://example.com/alias")
+            .unwrap();
+
+        repo.delete(&bm.id).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bookmark_urls", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
     fn delete_missing_id_returns_false() {
         let conn = setup();
         let repo = BookmarkRepository::new(&conn);
         assert!(!repo.delete("am_nope").unwrap());
+    }
+
+    // ── URL aliases ─────────────────────────────────────────────────
+
+    fn alias_count(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM bookmark_urls WHERE bookmark_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn insert_records_canonical_url_alias() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm = sample_bookmark("https://example.com/a", "A");
+        repo.insert(&bm).unwrap();
+
+        let saved = repo
+            .saved_urls(&["https://example.com/a".to_string()])
+            .unwrap();
+        assert!(saved.contains("https://example.com/a"));
+        assert_eq!(alias_count(&conn, &bm.id), 1);
+    }
+
+    #[test]
+    fn update_records_new_canonical_and_keeps_old() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let mut bm = sample_bookmark("https://example.com/a", "A");
+        repo.insert(&bm).unwrap();
+
+        bm.canonical_url = "https://example.com/b".to_string();
+        assert!(repo.update(&bm).unwrap());
+
+        let saved = repo
+            .saved_urls(&[
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(saved.len(), 2);
+    }
+
+    #[test]
+    fn update_missing_id_records_no_alias() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm = sample_bookmark("https://example.com/ghost", "Ghost");
+        assert!(!repo.update(&bm).unwrap());
+        assert_eq!(alias_count(&conn, &bm.id), 0);
+    }
+
+    #[test]
+    fn aliases_never_duplicate() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm = sample_bookmark("https://example.com/a", "A");
+        repo.insert(&bm).unwrap();
+        repo.update(&bm).unwrap();
+        repo.add_url_alias(&bm.id, "https://example.com/a").unwrap();
+        repo.add_url_alias(&bm.id, "https://example.com/x").unwrap();
+        repo.add_url_alias(&bm.id, "https://example.com/x").unwrap();
+        assert_eq!(alias_count(&conn, &bm.id), 2);
+    }
+
+    #[test]
+    fn saved_urls_finds_alias_of_other_bookmark() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let a = sample_bookmark("https://example.com/a", "A");
+        let b = sample_bookmark("https://example.com/b", "B");
+        repo.insert(&a).unwrap();
+        repo.insert(&b).unwrap();
+        repo.add_url_alias(&a.id, "https://example.com/a-alias")
+            .unwrap();
+
+        let saved = repo
+            .saved_urls(&[
+                "https://example.com/a-alias".to_string(),
+                "https://example.com/b".to_string(),
+                "https://example.com/unsaved".to_string(),
+            ])
+            .unwrap();
+        let expected: HashSet<String> = [
+            "https://example.com/a-alias".to_string(),
+            "https://example.com/b".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(saved, expected);
+    }
+
+    #[test]
+    fn saved_urls_empty_input_returns_empty() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        assert!(repo.saved_urls(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn saved_urls_spans_multiple_chunks() {
+        let conn = setup();
+        let repo = BookmarkRepository::new(&conn);
+        let bm = sample_bookmark("https://example.com/a", "A");
+        repo.insert(&bm).unwrap();
+
+        // The saved URL sits in the second chunk.
+        let mut urls: Vec<String> = (0..SAVED_URLS_CHUNK + 50)
+            .map(|i| format!("https://example.com/unsaved/{i}"))
+            .collect();
+        urls.push("https://example.com/a".to_string());
+        let saved = repo.saved_urls(&urls).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert!(saved.contains("https://example.com/a"));
     }
 
     // ── List ────────────────────────────────────────────────────────

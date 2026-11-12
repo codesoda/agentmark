@@ -35,7 +35,7 @@ pub enum ConfigError {
     #[error("path exists but is not a directory: {path}")]
     NotADirectory { path: PathBuf },
 
-    #[error("invalid agent: {value} (expected \"claude\" or \"codex\")")]
+    #[error("invalid agent: {value} (expected \"claude\", \"codex\" or \"pi\")")]
     InvalidAgent { value: String },
 
     #[error("storage path cannot be blank")]
@@ -56,6 +56,11 @@ pub struct Config {
     pub storage_path: PathBuf,
     pub system_prompt: Option<String>,
     pub log_level: Option<String>,
+    /// Extra `host/path-prefix` rules for pages that should be saved from the
+    /// browser's snapshot rather than a fetch. Added to the built-in rules in
+    /// `snapshot_rules`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snapshot_sites: Vec<String>,
     pub enrichment: EnrichmentConfig,
 }
 
@@ -123,7 +128,7 @@ pub fn home_dir() -> Result<PathBuf, ConfigError> {
 pub fn validate_agent(input: &str) -> Result<String, ConfigError> {
     let normalized = input.trim().to_lowercase();
     match normalized.as_str() {
-        "claude" | "codex" => Ok(normalized),
+        "claude" | "codex" | "pi" => Ok(normalized),
         _ => Err(ConfigError::InvalidAgent {
             value: input.trim().to_string(),
         }),
@@ -142,6 +147,10 @@ const SYSTEM_PROMPT_COMMENT: &str = r#"
 
 # Log level for file logging (~/.agentmark/logs/). Overridden by AGENTMARK_LOG env var.
 # log_level = "debug"
+
+# Pages to save from the browser's snapshot instead of fetching them, as
+# host/path-prefix rules. LinkedIn profiles, posts and company pages are built in.
+# snapshot_sites = ["example.com/app/"]
 "#;
 
 /// Renders a Config to a human-readable TOML string with commented examples.
@@ -245,6 +254,7 @@ mod tests {
             storage_path: PathBuf::from("/home/user/bookmarks"),
             system_prompt: None,
             log_level: None,
+            snapshot_sites: Vec::new(),
             enrichment: EnrichmentConfig { enabled: true },
         }
     }

@@ -37,6 +37,9 @@ pub enum Commands {
     /// Reprocess bookmarks to re-extract or re-enrich content
     Reprocess(ReprocessArgs),
 
+    /// Delete a bookmark and its files
+    Delete(DeleteArgs),
+
     /// Run the native messaging host for the browser extension
     NativeHost,
 
@@ -45,6 +48,20 @@ pub enum Commands {
 
     /// Install the AgentMark skill into local agent systems (Claude Code, Codex)
     AddSkill,
+
+    /// Run deferred model work for a saved bookmark (started by the native host)
+    #[command(hide = true)]
+    PostProcess(PostProcessArgs),
+}
+
+#[derive(clap::Args)]
+pub struct PostProcessArgs {
+    /// Bookmark ID
+    pub id: String,
+
+    /// Have the model render article.md from the captured page HTML
+    #[arg(long)]
+    pub render_article: bool,
 }
 
 #[derive(clap::Args)]
@@ -154,6 +171,16 @@ pub struct TagArgs {
 pub struct OpenArgs {
     /// Bookmark ID to open
     pub id: String,
+}
+
+#[derive(clap::Args)]
+pub struct DeleteArgs {
+    /// Bookmark ID to delete
+    pub id: String,
+
+    /// Delete without asking for confirmation
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(clap::Args)]

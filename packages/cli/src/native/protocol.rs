@@ -7,13 +7,14 @@
 use std::io::{self, Read, Write};
 use thiserror::Error;
 
-/// Defensive maximum message size (1 MiB).
+/// Defensive maximum size for messages read from Chrome (16 MiB).
 ///
 /// Chrome's native messaging transport has a 1 MB limit for messages sent
-/// by the native host and 4 GB for messages from Chrome. We cap reads at
-/// 1 MiB to protect against corrupted or hostile length prefixes while
-/// still covering any realistic `selected_text` payload.
-pub const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+/// by the native host and a far larger one for messages from Chrome. We cap
+/// reads at 16 MiB to protect against corrupted or hostile length prefixes
+/// while leaving room for a `page_html` snapshot of the live tab (the
+/// extension caps that payload well below this limit).
+pub const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Errors that can occur during native message framing.
 #[derive(Debug, Error)]
@@ -271,8 +272,7 @@ mod tests {
 
     #[test]
     fn oversized_length_rejected() {
-        // 2 MiB = 2 * 1024 * 1024 = 0x00200000
-        let size: u32 = 2 * 1024 * 1024;
+        let size: u32 = MAX_MESSAGE_SIZE + 1;
         let buf = size.to_le_bytes().to_vec();
         let mut cursor = Cursor::new(buf);
         let err = read_message(&mut cursor).unwrap_err();
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn exact_max_size_accepted() {
         // A message exactly at MAX_MESSAGE_SIZE should be accepted (if valid JSON).
-        // We won't allocate a full 1 MiB of valid JSON here, but verify the boundary
+        // We won't build a full-size valid JSON document here, but verify the boundary
         // by testing MAX_MESSAGE_SIZE - 1 isn't rejected.
         let size = MAX_MESSAGE_SIZE;
         // Just verify the check passes; we'll get InvalidJson since

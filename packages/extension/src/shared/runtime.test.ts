@@ -12,6 +12,8 @@ import {
   loadLastUsedIntent,
   saveLastUsedIntent,
   querySelectedText,
+  queryPageHtml,
+  MAX_PAGE_HTML_LENGTH,
   normalizeTags,
 } from "./runtime";
 
@@ -239,6 +241,24 @@ describe("isConnectionError", () => {
 
   it("detects not connected", () => {
     expect(isConnectionError("not connected to native host")).toBe(true);
+  });
+
+  it("detects dead service worker (could not establish connection)", () => {
+    expect(
+      isConnectionError("Could not establish connection. Receiving end does not exist."),
+    ).toBe(true);
+  });
+
+  it("detects closed message port", () => {
+    expect(
+      isConnectionError("The message port closed before a response was received."),
+    ).toBe(true);
+  });
+
+  it("detects forbidden native host (extension id mismatch)", () => {
+    expect(
+      isConnectionError("Access to the specified native messaging host is forbidden."),
+    ).toBe(true);
   });
 
   it("returns false for generic errors", () => {
@@ -635,5 +655,54 @@ describe("sendUpdateBookmarkMessage", () => {
 
     const result = await sendUpdateBookmarkMessage("am_1", { note: "test" });
     expect(result.error).toBe("host exited");
+  });
+});
+
+describe("queryPageHtml", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("returns the rendered page HTML", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: "<html><body>profile</body></html>" },
+    ]);
+
+    expect(await queryPageHtml(42)).toBe("<html><body>profile</body></html>");
+  });
+
+  it("asks LinkedIn profiles to scroll before the snapshot", async () => {
+    const executeScript = chrome.scripting.executeScript as ReturnType<typeof vi.fn>;
+    executeScript.mockResolvedValue([{ result: "<html></html>" }]);
+
+    await queryPageHtml(42, "https://www.linkedin.com/in/someone/");
+    expect(executeScript.mock.calls[0][0].args).toEqual([true]);
+
+    await queryPageHtml(42, "https://example.com/");
+    expect(executeScript.mock.calls[1][0].args).toEqual([false]);
+  });
+
+  it("truncates oversized snapshots", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: "x".repeat(MAX_PAGE_HTML_LENGTH + 10) },
+    ]);
+
+    expect((await queryPageHtml(42))?.length).toBe(MAX_PAGE_HTML_LENGTH);
+  });
+
+  it("returns undefined for an empty page", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { result: "  " },
+    ]);
+
+    expect(await queryPageHtml(42)).toBeUndefined();
+  });
+
+  it("returns undefined when executeScript throws", async () => {
+    (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Cannot access chrome:// URLs"),
+    );
+
+    expect(await queryPageHtml(42)).toBeUndefined();
   });
 });

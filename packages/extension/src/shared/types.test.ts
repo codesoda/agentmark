@@ -106,6 +106,36 @@ describe("parseNativeResponse", () => {
     ).toThrow("missing 'collections' array");
   });
 
+  // -- lookup_urls_result --
+
+  it("parses lookup_urls_result correctly", () => {
+    const raw = { type: "lookup_urls_result", saved: ["https://x.com/ada/status/1"] };
+    expect(parseNativeResponse(raw)).toEqual({
+      type: "lookup_urls_result",
+      saved: ["https://x.com/ada/status/1"],
+    });
+  });
+
+  it("parses lookup_urls_result with nothing saved", () => {
+    expect(parseNativeResponse({ type: "lookup_urls_result", saved: [] })).toEqual({
+      type: "lookup_urls_result",
+      saved: [],
+    });
+  });
+
+  it("rejects lookup_urls_result with missing or non-array saved", () => {
+    expect(() => parseNativeResponse({ type: "lookup_urls_result" })).toThrow("missing 'saved' array");
+    expect(() => parseNativeResponse({ type: "lookup_urls_result", saved: "x" })).toThrow(
+      "missing 'saved' array",
+    );
+  });
+
+  it("rejects lookup_urls_result with non-string saved entries", () => {
+    expect(() => parseNativeResponse({ type: "lookup_urls_result", saved: ["https://a.example/", 3] })).toThrow(
+      "non-string saved entries",
+    );
+  });
+
   // -- list_result --
 
   it("parses list_result with bookmarks correctly", () => {

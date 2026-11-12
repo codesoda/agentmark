@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, instrument, warn};
 
 use crate::agent;
+use crate::agent::provider::RealRunner;
 use crate::bundle::{BodySections, Bundle};
 use crate::canonical;
 use crate::cli::SaveArgs;
@@ -24,6 +25,8 @@ use crate::fetch::{self, FetchError, PageMetadata};
 use crate::models::{
     Bookmark, BookmarkEvent, CaptureSource, ContentStatus, EventType, SummaryStatus,
 };
+use crate::snapshot_rules;
+use crate::youtube;
 
 // ── Public entry point ──────────────────────────────────────────────
 
@@ -75,6 +78,17 @@ pub struct SaveOutcome {
     pub bundle_path: PathBuf,
     pub warnings: Vec<String>,
     pub dedup: DedupResult,
+    /// Set when model work was deferred instead of run during the save.
+    /// The caller is responsible for starting it (see `commands::post_process`).
+    pub post_process: Option<PostProcess>,
+}
+
+/// Model work left to do after a save that deferred it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostProcess {
+    /// The content came from a browser snapshot, where generic article
+    /// extraction is unreliable: have the model render `article.md` from it.
+    pub render_article: bool,
 }
 
 /// Save-specific errors with pipeline stage context.
@@ -181,7 +195,14 @@ pub(crate) struct SaveRequest {
     pub action: Option<String>,
     pub capture_source: CaptureSource,
     pub provided_title: Option<String>,
+    /// HTML snapshot of the page as rendered in the caller's browser.
+    /// Used only when the server-side fetch fails (login walls, bot blocking).
+    pub page_html: Option<String>,
     pub no_enrich: bool,
+    /// Return as soon as the bookmark is durable and report the remaining model
+    /// work in `SaveOutcome::post_process` instead of running it inline.
+    /// Interactive callers use this so a slow model never blocks the save.
+    pub defer_enrichment: bool,
 }
 
 impl SaveRequest {
@@ -195,7 +216,9 @@ impl SaveRequest {
             action: normalize_optional_text(args.action.as_deref()),
             capture_source: CaptureSource::Cli,
             provided_title: None,
+            page_html: None,
             no_enrich: args.no_enrich,
+            defer_enrichment: false,
         }
     }
 }
@@ -216,8 +239,23 @@ fn classify_extraction(result: &ExtractionResult) -> (ContentStatus, Option<Stri
 
 // ── Fetched page data ───────────────────────────────────────────────
 
+/// Where the page content of a save came from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PageSource {
+    /// Fetched over HTTP by the CLI.
+    Fetched,
+    /// HTML snapshot supplied by the caller's browser after the fetch failed.
+    Snapshot,
+    /// Fetch failed and no snapshot was supplied — there is no page content.
+    Unavailable,
+}
+
 /// Result of fetching + extracting a page, packaged for reuse.
 struct FetchedPage {
+    source: PageSource,
+    /// The page as the CLI fetched it, when `raw_html` is a browser snapshot
+    /// and the fetch also succeeded. Supplementary content for the agent.
+    fetched_html: Option<String>,
     raw_html: String,
     metadata: PageMetadata,
     extraction: ExtractionResult,
@@ -232,12 +270,238 @@ fn fetch_and_extract(url: &str) -> Result<FetchedPage, SaveError> {
     let (content_status, extraction_warning) = classify_extraction(&extraction);
     debug!(content_status = ?content_status, hash = %extraction.content_hash, "fetch and extract complete");
     Ok(FetchedPage {
+        source: PageSource::Fetched,
+        fetched_html: None,
         raw_html,
         metadata,
         extraction,
         content_status,
         extraction_warning,
     })
+}
+
+/// HTTP statuses that mean "the page exists but refuses automated clients"
+/// (e.g. LinkedIn answers 999 to anything that is not a logged-in browser).
+fn is_access_blocked_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429 | 999)
+}
+
+/// Decide whether a failed fetch may still produce a bookmark.
+///
+/// - Malformed/unsupported URLs never fall back.
+/// - Browser captures always fall back: the user is looking at the page, so
+///   the URL is known to be real even if the CLI cannot reach it.
+/// - CLI saves fall back only when the server actively blocks automated
+///   clients; other failures (404, 5xx, network) stay hard errors so typos
+///   and transient outages are not silently bookmarked.
+fn fetch_fallback_allowed(err: &FetchError, req: &SaveRequest) -> bool {
+    match err {
+        FetchError::InvalidUrl { .. } | FetchError::UnsupportedScheme { .. } => false,
+        _ if req.page_html.is_some() || req.capture_source == CaptureSource::ChromeExtension => {
+            true
+        }
+        FetchError::HttpStatus { status, .. } => is_access_blocked_status(*status),
+        _ => false,
+    }
+}
+
+/// Build a page from a browser-supplied HTML snapshot.
+fn page_from_snapshot(url: &str, html: &str) -> Option<FetchedPage> {
+    if html.trim().is_empty() {
+        return None;
+    }
+    let base_url = url::Url::parse(url).ok()?;
+    let metadata = fetch::metadata::extract_metadata(html, &base_url);
+    let mut extraction = extract::extract_content(html);
+    let (content_status, extraction_warning) = classify_extraction(&extraction);
+    // The extracted article is provisional (the agent renders the real one) and
+    // covers only part of the page, so it must not decide whether the page changed.
+    extraction.content_hash = extract::snapshot_hash(html);
+    Some(FetchedPage {
+        source: PageSource::Snapshot,
+        fetched_html: None,
+        raw_html: html.to_string(),
+        metadata,
+        extraction,
+        content_status,
+        extraction_warning,
+    })
+}
+
+/// Longest video description kept as the bookmark's description, in characters.
+const VIDEO_DESCRIPTION_CHARS: usize = 300;
+
+/// Build a page from a captured video: the rendered transcript is the article.
+fn page_from_video(video: &youtube::Video) -> FetchedPage {
+    let article_markdown = youtube::render_markdown(video);
+    let description = video.description.as_deref().map(|full| {
+        let first_paragraph = full.split("\n\n").next().unwrap_or(full).trim();
+        first_paragraph
+            .chars()
+            .take(VIDEO_DESCRIPTION_CHARS)
+            .collect::<String>()
+    });
+    let extraction = ExtractionResult {
+        article_html: String::new(),
+        content_hash: extract::hash_text(&article_markdown),
+        article_markdown,
+    };
+    FetchedPage {
+        source: PageSource::Fetched,
+        fetched_html: None,
+        raw_html: String::new(),
+        metadata: PageMetadata {
+            title: Some(video.title.clone()),
+            description,
+            author: video.channel.clone(),
+            site_name: Some("YouTube".to_string()),
+            published_at: video.published.clone(),
+            canonical_url: Some(video.url.clone()),
+            favicon_url: None,
+            hero_image_url: video.thumbnail_url.clone(),
+        },
+        extraction,
+        content_status: ContentStatus::Extracted,
+        extraction_warning: None,
+    }
+}
+
+/// Build a content-less page so the bookmark itself can still be saved.
+fn unavailable_page() -> FetchedPage {
+    FetchedPage {
+        source: PageSource::Unavailable,
+        fetched_html: None,
+        raw_html: String::new(),
+        metadata: PageMetadata::default(),
+        extraction: extract::extract_content(""),
+        content_status: ContentStatus::Failed,
+        extraction_warning: None,
+    }
+}
+
+/// Fetch and extract the page, degrading to a browser snapshot or a
+/// content-less bookmark when the fetch fails in a recoverable way.
+/// Returns the page plus an optional warning describing the fallback.
+fn acquire_page(
+    req: &SaveRequest,
+    config: &Config,
+) -> Result<(FetchedPage, Option<String>), SaveError> {
+    // A video has no article to extract: capture its description and transcript.
+    if let Some(video_id) = youtube::video_id(&req.url) {
+        match youtube::fetch_video(&video_id, &RealRunner) {
+            Ok(video) => return Ok((page_from_video(&video), None)),
+            // yt-dlp missing or failing: save the page the ordinary way.
+            Err(e) => warn!(error = %e, "video capture unavailable — saving as a normal page"),
+        }
+    }
+
+    // Sites that show a logged-in browser more than an anonymous client: the
+    // snapshot is the content, and the fetch only adds what it can.
+    if snapshot_rules::prefers_browser_snapshot(&req.url, &config.snapshot_sites) {
+        let snapshot = req
+            .page_html
+            .as_deref()
+            .and_then(|html| page_from_snapshot(&req.url, html));
+        if let Some(mut page) = snapshot {
+            match fetch::fetch_page_with_final_url(&req.url) {
+                Ok((fetched_html, fetched_metadata, final_url))
+                    if landed_on_requested_page(&req.url, &final_url)
+                        && !looks_like_login_wall(&req.url, &fetched_metadata) =>
+                {
+                    debug!("snapshot preferred — fetched page kept as supplement");
+                    page.metadata = prefer_metadata(fetched_metadata, page.metadata);
+                    page.fetched_html = Some(fetched_html);
+                }
+                Ok((_, _, final_url)) => {
+                    // Typically a login wall. Its title and canonical URL describe
+                    // the login page, not this one, so none of it may be used.
+                    debug!(%final_url, "snapshot preferred — fetch did not return this page, ignoring it");
+                }
+                Err(e) => debug!(error = %e, "snapshot preferred — fetch unavailable"),
+            }
+            return Ok((page, None));
+        }
+    }
+
+    let err = match fetch_and_extract(&req.url) {
+        Ok(page) => return Ok((page, None)),
+        Err(SaveError::Fetch(e)) if fetch_fallback_allowed(&e, req) => e,
+        Err(e) => return Err(e),
+    };
+
+    let snapshot = req
+        .page_html
+        .as_deref()
+        .and_then(|html| page_from_snapshot(&req.url, html));
+    match snapshot {
+        Some(page) => {
+            warn!(error = %err, "fetch failed — using browser snapshot");
+            Ok((
+                page,
+                Some(format!("fetch failed ({err}); saved from browser snapshot")),
+            ))
+        }
+        None => {
+            warn!(error = %err, "fetch failed — saving without page content");
+            Ok((
+                unavailable_page(),
+                Some(format!("fetch failed ({err}); saved without page content")),
+            ))
+        }
+    }
+}
+
+/// Whether a fetch ended on the page that was asked for.
+///
+/// Redirects that keep the path (a regional subdomain, `http` → `https`, a
+/// trailing slash) are the same page. A different path is a different page.
+fn landed_on_requested_page(requested: &str, final_url: &url::Url) -> bool {
+    let Ok(requested) = url::Url::parse(requested) else {
+        return false;
+    };
+    requested.path().trim_end_matches('/') == final_url.path().trim_end_matches('/')
+}
+
+/// Whether a fetched page is a login or sign-up wall served in place of the
+/// requested page (some sites answer HTTP 200 on the original URL).
+///
+/// Signals: the page declares the site root as its canonical URL although a
+/// deeper page was requested, or its title is a login prompt. A false positive
+/// only costs the supplementary copy, so the check errs on the side of dropping.
+fn looks_like_login_wall(requested: &str, metadata: &PageMetadata) -> bool {
+    let requested_is_root = url::Url::parse(requested)
+        .map(|u| u.path().trim_matches('/').is_empty())
+        .unwrap_or(false);
+    let canonical_is_root = metadata
+        .canonical_url
+        .as_deref()
+        .and_then(|c| url::Url::parse(c).ok())
+        .is_some_and(|u| u.path().trim_matches('/').is_empty());
+    if canonical_is_root && !requested_is_root {
+        return true;
+    }
+
+    let title = metadata.title.as_deref().unwrap_or("").to_lowercase();
+    ["log in", "login", "sign in", "sign up", "signin", "signup"]
+        .iter()
+        .any(|needle| title.starts_with(needle) || title.contains(&format!(" {needle}")))
+}
+
+/// Merge page metadata field by field, taking `primary` where it has a value.
+///
+/// The publicly fetched page usually carries better metadata (canonical URL,
+/// Open Graph tags) than a logged-in app page does.
+fn prefer_metadata(primary: PageMetadata, fallback: PageMetadata) -> PageMetadata {
+    PageMetadata {
+        title: primary.title.or(fallback.title),
+        description: primary.description.or(fallback.description),
+        author: primary.author.or(fallback.author),
+        site_name: primary.site_name.or(fallback.site_name),
+        published_at: primary.published_at.or(fallback.published_at),
+        canonical_url: primary.canonical_url.or(fallback.canonical_url),
+        favicon_url: primary.favicon_url.or(fallback.favicon_url),
+        hero_image_url: primary.hero_image_url.or(fallback.hero_image_url),
+    }
 }
 
 // ── Bookmark construction ───────────────────────────────────────────
@@ -345,12 +609,13 @@ struct PostSaveContext {
 }
 
 impl PostSaveContext {
-    fn into_outcome(self) -> SaveOutcome {
+    fn into_outcome(self, post_process: Option<PostProcess>) -> SaveOutcome {
         SaveOutcome {
             id: self.bookmark.id.clone(),
             bundle_path: self.bundle.path().to_path_buf(),
             warnings: self.warnings,
             dedup: self.dedup,
+            post_process,
         }
     }
 }
@@ -420,8 +685,9 @@ pub(crate) fn execute_save_request(
     );
 
     // 6. Fetch page and extract content
-    let page = fetch_and_extract(&req.url)?;
+    let (page, fetch_warning) = acquire_page(req, &config)?;
     let mut warnings = Vec::new();
+    warnings.extend(fetch_warning);
     if let Some(w) = &page.extraction_warning {
         warnings.push(w.clone());
     }
@@ -466,9 +732,27 @@ pub(crate) fn execute_save_request(
         )?,
     };
 
-    // 10. Run enrichment (best-effort, after durable save)
+    // 10. Remember the requested URL too, so lookups by the URL the user
+    // actually visited (e.g. a feed link whose page declares another canonical)
+    // find this bookmark. insert/update already recorded the final canonical.
+    // The bookmark is durably saved by now, so a failure here is only a warning.
+    if let Err(e) = repo.add_url_alias(&ctx.bookmark.id, &pre_fetch_canonical) {
+        warn!(id = %ctx.bookmark.id, error = %e, "failed to record requested URL alias");
+        ctx.warnings
+            .push(format!("failed to record requested URL alias: {e}"));
+    }
+
+    // 11. Run enrichment (best-effort, after durable save)
     let enrich_eligible = !req.no_enrich && ctx.dedup != DedupResult::Unchanged;
     debug!(eligible = enrich_eligible, dedup = ?ctx.dedup, "enrichment decision");
+
+    if enrich_eligible && req.defer_enrichment {
+        let post_process = config.enrichment.enabled.then_some(PostProcess {
+            render_article: page.source == PageSource::Snapshot,
+        });
+        info!(id = %ctx.bookmark.id, dedup = ?ctx.dedup, ?post_process, "save complete, model work deferred");
+        return Ok(ctx.into_outcome(post_process));
+    }
 
     if enrich_eligible {
         let outcome = enrich::enrich_bookmark(
@@ -494,7 +778,7 @@ pub(crate) fn execute_save_request(
     }
 
     info!(id = %ctx.bookmark.id, dedup = ?ctx.dedup, "save complete");
-    Ok(ctx.into_outcome())
+    Ok(ctx.into_outcome(None))
 }
 
 // ── New save path ───────────────────────────────────────────────────
@@ -534,6 +818,8 @@ fn handle_new_save(
         capture_source_str,
     )?;
 
+    bundle.update_fetched_html(page.fetched_html.as_deref())?;
+
     let bundle_path = bundle.path().to_path_buf();
     let id = bookmark.id.clone();
 
@@ -568,7 +854,9 @@ fn handle_duplicate(
 ) -> Result<PostSaveContext, SaveError> {
     let old_hash = existing.content_hash.clone();
     let new_hash = &page.extraction.content_hash;
-    let content_changed = old_hash.as_deref() != Some(new_hash);
+    // A save with no page content must never overwrite a previous capture.
+    let content_changed =
+        page.source != PageSource::Unavailable && old_hash.as_deref() != Some(new_hash);
     debug!(content_changed, "duplicate detected");
 
     // Find existing bundle on disk
@@ -706,6 +994,7 @@ fn handle_content_changed(
     bundle.update_article_md(&page.extraction.article_markdown)?;
     bundle.update_metadata_json(&page.metadata)?;
     bundle.update_source_html(&page.raw_html)?;
+    bundle.update_fetched_html(page.fetched_html.as_deref())?;
 
     // Clear stale enrichment body sections when content changes.
     // Use fresh BodySections::default() instead of preserving old body,
@@ -948,6 +1237,8 @@ mod tests {
             content_hash: "sha256:abc123".to_string(),
         };
         let page = FetchedPage {
+            source: PageSource::Fetched,
+            fetched_html: None,
             raw_html: String::new(),
             metadata,
             extraction,
@@ -989,6 +1280,8 @@ mod tests {
     #[test]
     fn build_bookmark_missing_title_falls_back_to_url() {
         let page = FetchedPage {
+            source: PageSource::Fetched,
+            fetched_html: None,
             raw_html: String::new(),
             metadata: PageMetadata::default(),
             extraction: ExtractionResult {
@@ -1020,6 +1313,8 @@ mod tests {
     #[test]
     fn build_bookmark_summary_status_is_pending() {
         let page = FetchedPage {
+            source: PageSource::Fetched,
+            fetched_html: None,
             raw_html: String::new(),
             metadata: PageMetadata::default(),
             extraction: ExtractionResult {
@@ -1132,6 +1427,8 @@ mod tests {
     #[test]
     fn build_bookmark_chrome_extension_capture_source() {
         let page = FetchedPage {
+            source: PageSource::Fetched,
+            fetched_html: None,
             raw_html: String::new(),
             metadata: PageMetadata {
                 title: Some("Page Title".to_string()),
@@ -1166,6 +1463,8 @@ mod tests {
     #[test]
     fn build_bookmark_provided_title_used_when_no_metadata_title() {
         let page = FetchedPage {
+            source: PageSource::Fetched,
+            fetched_html: None,
             raw_html: String::new(),
             metadata: PageMetadata::default(),
             extraction: ExtractionResult {
@@ -1197,6 +1496,8 @@ mod tests {
     #[test]
     fn build_bookmark_metadata_title_takes_priority_over_provided() {
         let page = FetchedPage {
+            source: PageSource::Fetched,
+            fetched_html: None,
             raw_html: String::new(),
             metadata: PageMetadata {
                 title: Some("Metadata Title".to_string()),
@@ -1226,5 +1527,180 @@ mod tests {
             Some("Extension Title"),
         );
         assert_eq!(bm.title, "Metadata Title");
+    }
+
+    // ── fetch fallback policy ───────────────────────────────────────
+
+    fn fallback_req(capture_source: CaptureSource, page_html: Option<&str>) -> SaveRequest {
+        SaveRequest {
+            url: "https://example.com".to_string(),
+            tags: Vec::new(),
+            collection: None,
+            note: None,
+            action: None,
+            capture_source,
+            provided_title: None,
+            page_html: page_html.map(str::to_string),
+            no_enrich: true,
+            defer_enrichment: false,
+        }
+    }
+
+    fn http_status(status: u16) -> FetchError {
+        FetchError::HttpStatus {
+            status,
+            url: "https://example.com".to_string(),
+        }
+    }
+
+    #[test]
+    fn cli_falls_back_only_on_access_blocked_statuses() {
+        let req = fallback_req(CaptureSource::Cli, None);
+        assert!(fetch_fallback_allowed(&http_status(999), &req));
+        assert!(fetch_fallback_allowed(&http_status(403), &req));
+        assert!(!fetch_fallback_allowed(&http_status(404), &req));
+        assert!(!fetch_fallback_allowed(&http_status(500), &req));
+        assert!(!fetch_fallback_allowed(
+            &FetchError::Timeout {
+                url: "https://example.com".to_string()
+            },
+            &req
+        ));
+    }
+
+    #[test]
+    fn extension_falls_back_on_any_network_failure() {
+        let req = fallback_req(CaptureSource::ChromeExtension, None);
+        assert!(fetch_fallback_allowed(&http_status(404), &req));
+        assert!(fetch_fallback_allowed(
+            &FetchError::Timeout {
+                url: "https://example.com".to_string()
+            },
+            &req
+        ));
+    }
+
+    #[test]
+    fn bad_urls_never_fall_back() {
+        let req = fallback_req(CaptureSource::ChromeExtension, Some("<html></html>"));
+        assert!(!fetch_fallback_allowed(
+            &FetchError::InvalidUrl {
+                url: "bad".to_string(),
+                reason: "nope".to_string()
+            },
+            &req
+        ));
+    }
+
+    #[test]
+    fn same_path_counts_as_the_requested_page() {
+        let landed = |requested: &str, final_url: &str| {
+            landed_on_requested_page(requested, &url::Url::parse(final_url).unwrap())
+        };
+        assert!(landed(
+            "https://www.linkedin.com/company/acme/",
+            "https://au.linkedin.com/company/acme"
+        ));
+        assert!(landed(
+            "http://example.com/posts/a?utm_source=x",
+            "https://example.com/posts/a/"
+        ));
+        assert!(!landed(
+            "https://www.linkedin.com/company/acme/about/",
+            "https://www.linkedin.com/login"
+        ));
+        assert!(!landed(
+            "https://www.linkedin.com/feed/",
+            "https://www.linkedin.com/"
+        ));
+        assert!(!landed("not a url", "https://example.com/"));
+    }
+
+    #[test]
+    fn login_walls_are_recognised_by_root_canonical_or_title() {
+        let meta = |title: &str, canonical: Option<&str>| PageMetadata {
+            title: Some(title.to_string()),
+            canonical_url: canonical.map(str::to_string),
+            ..Default::default()
+        };
+        let feed = "https://www.linkedin.com/feed/foryou/";
+        assert!(looks_like_login_wall(
+            feed,
+            &meta("Log In or Sign Up", Some("https://www.linkedin.com/"))
+        ));
+        assert!(looks_like_login_wall(
+            feed,
+            &meta("Welcome", Some("https://www.linkedin.com/"))
+        ));
+        assert!(looks_like_login_wall(
+            feed,
+            &meta("LinkedIn Login, Sign in | LinkedIn", None)
+        ));
+    }
+
+    #[test]
+    fn real_pages_are_not_login_walls() {
+        let post = "https://www.linkedin.com/feed/update/urn:li:activity:1/";
+        let meta = PageMetadata {
+            title: Some("#agenticai #canva | Nathan Challen".to_string()),
+            canonical_url: Some(
+                "https://www.linkedin.com/posts/nathan_activity-1-TUUQ".to_string(),
+            ),
+            ..Default::default()
+        };
+        assert!(!looks_like_login_wall(post, &meta));
+        // Requesting the site root itself: a root canonical is expected.
+        let home = PageMetadata {
+            title: Some("Example".to_string()),
+            canonical_url: Some("https://example.com/".to_string()),
+            ..Default::default()
+        };
+        assert!(!looks_like_login_wall("https://example.com/", &home));
+        assert!(!looks_like_login_wall(post, &PageMetadata::default()));
+    }
+
+    #[test]
+    fn video_page_uses_transcript_as_article_and_video_metadata() {
+        let video = youtube::Video {
+            id: "zjkBMFhNj_g".to_string(),
+            url: youtube::watch_url("zjkBMFhNj_g"),
+            title: "Intro to LLMs".to_string(),
+            channel: Some("Andrej Karpathy".to_string()),
+            published: Some("2023-11-23".to_string()),
+            duration_seconds: Some(60),
+            description: Some(format!("First paragraph.\n\n{}", "x".repeat(1000))),
+            thumbnail_url: Some("https://i.ytimg.com/vi/x/hq.jpg".to_string()),
+            chapters: vec![],
+            transcript: None,
+        };
+
+        let page = page_from_video(&video);
+
+        assert_eq!(page.source, PageSource::Fetched);
+        assert_eq!(page.content_status, ContentStatus::Extracted);
+        assert!(page
+            .extraction
+            .article_markdown
+            .starts_with("# Intro to LLMs\n"));
+        assert_eq!(
+            page.extraction.content_hash,
+            extract::hash_text(&page.extraction.article_markdown)
+        );
+        assert_eq!(page.metadata.title.as_deref(), Some("Intro to LLMs"));
+        assert_eq!(page.metadata.author.as_deref(), Some("Andrej Karpathy"));
+        assert_eq!(page.metadata.site_name.as_deref(), Some("YouTube"));
+        assert_eq!(
+            page.metadata.description.as_deref(),
+            Some("First paragraph.")
+        );
+        assert_eq!(
+            page.metadata.canonical_url.as_deref(),
+            Some("https://www.youtube.com/watch?v=zjkBMFhNj_g")
+        );
+    }
+
+    #[test]
+    fn blank_snapshot_is_ignored() {
+        assert!(page_from_snapshot("https://example.com", "  \n ").is_none());
     }
 }

@@ -7,13 +7,23 @@
  */
 
 import { getNativeClient } from "../shared/native-messaging";
-import type { RuntimeMessage, RuntimeResponse, NativeRequest } from "../shared/types";
+import type {
+  RuntimeMessage,
+  RuntimeResponse,
+  NativeRequest,
+  PendingSave,
+  SaveResultNotice,
+} from "../shared/types";
 import { isErrorResponse } from "../shared/types";
 import { EXTENSION_NAME } from "../shared/constants";
+import { queryPageHtml } from "../shared/runtime";
+import { ToolbarIcon } from "./toolbar-icon";
 
 const CONTEXT_MENU_ID = "agentmark-save";
 const SIDEPANEL_MENU_ID = "agentmark-sidepanel";
 const SUPPORTED_SCHEMES = new Set(["http:", "https:"]);
+/** The native host considers at most this many URLs per lookup. */
+const MAX_LOOKUP_URLS = 200;
 
 // --- Context menu ---
 
@@ -60,13 +70,92 @@ async function handleNativeRequest(request: NativeRequest): Promise<RuntimeRespo
   }
 }
 
+/** Per-tab toolbar icon state; asks the index through the same request path as everything else. */
+const toolbarIcon = new ToolbarIcon(handleNativeRequest);
+
+// --- Saves started by an in-page button, carried out by the popup ---
+
+/** How long the popup has to collect a pending save before it is dropped. */
+const PENDING_SAVE_TTL_MS = 5_000;
+
+/** A save waiting for the popup to open and take it. */
+let pendingSave: { save: PendingSave; tabId?: number; at: number } | null = null;
+/** The tab to tell when the popup's save of this URL finishes. */
+let resultListener: { url: string; tabId: number } | null = null;
+
+async function openActionPopup(): Promise<boolean> {
+  try {
+    if (typeof chrome.action?.openPopup !== "function") return false;
+    await chrome.action.openPopup();
+    return true;
+  } catch {
+    // Not supported, or the window is not focused.
+    return false;
+  }
+}
+
+function takePendingSave(): PendingSave | null {
+  const pending = pendingSave;
+  pendingSave = null;
+  if (!pending || Date.now() - pending.at > PENDING_SAVE_TTL_MS) return null;
+  if (pending.tabId !== undefined) {
+    resultListener = { url: pending.save.url, tabId: pending.tabId };
+  }
+  return pending.save;
+}
+
+function notifySaveResult(url: string, response: RuntimeResponse): void {
+  if (!resultListener || resultListener.url !== url) return;
+  const notice: SaveResultNotice = {
+    type: "agentmark:save-result",
+    url,
+    success: response.success,
+    error: response.success ? undefined : response.error,
+  };
+  try {
+    void Promise.resolve(chrome.tabs.sendMessage(resultListener.tabId, notice)).catch(() => {});
+  } catch {
+    // Tab closed or navigated — nothing to update.
+  }
+}
+
 // --- Runtime message handler ---
 
 function handleRuntimeMessage(
   message: RuntimeMessage,
-  _sender: chrome.runtime.MessageSender,
+  sender: chrome.runtime.MessageSender,
   sendResponse: (response: RuntimeResponse) => void,
 ): boolean {
+  if (message.type === "open_save_popup") {
+    if (!isSupportedUrl(message.url)) {
+      sendResponse({ success: false, error: "Unsupported or missing URL" });
+      return false;
+    }
+    const save: PendingSave = {
+      url: message.url,
+      title: message.title,
+      page_html: message.page_html,
+    };
+    pendingSave = { save, tabId: sender.tab?.id, at: Date.now() };
+    openActionPopup().then((opened) => {
+      if (opened) {
+        (sendResponse as (response: unknown) => void)({ success: true, popup_opened: true });
+        return;
+      }
+      // No popup available: save directly so the click is never lost.
+      pendingSave = null;
+      const saving = handleNativeRequest({ type: "save", ...save });
+      if (sender.tab?.id !== undefined) void toolbarIcon.trackTabSave(sender.tab.id, save.url, saving);
+      saving.then(sendResponse);
+    });
+    return true;
+  }
+
+  if (message.type === "take_pending_save") {
+    (sendResponse as (response: unknown) => void)({ pending: takePendingSave() });
+    return false;
+  }
+
   if (message.type === "save") {
     if (!isSupportedUrl(message.url)) {
       sendResponse({ success: false, error: "Unsupported or missing URL" });
@@ -82,9 +171,17 @@ function handleRuntimeMessage(
       note: message.note,
       selected_text: message.selected_text,
       action: message.action,
+      page_html: message.page_html,
     };
 
-    handleNativeRequest(nativeRequest).then(sendResponse);
+    const savedUrl = message.url;
+    const saving = handleNativeRequest(nativeRequest);
+    // The popup saves the active tab's page, or a post on it; only the former marks the tab.
+    void toolbarIcon.trackActiveTabSave(savedUrl, saving);
+    saving.then((response) => {
+      notifySaveResult(savedUrl, response);
+      sendResponse(response);
+    });
     return true; // Keep the message channel open for async response
   }
 
@@ -113,6 +210,19 @@ function handleRuntimeMessage(
     return true;
   }
 
+  if (message.type === "lookup_urls") {
+    const urls = (Array.isArray(message.urls) ? (message.urls as unknown[]) : [])
+      .filter((url): url is string => typeof url === "string" && isSupportedUrl(url))
+      .slice(0, MAX_LOOKUP_URLS);
+    if (urls.length === 0) {
+      // Nothing worth asking about: do not wake the native host.
+      sendResponse({ success: true, data: { type: "lookup_urls_result", saved: [] } });
+      return false;
+    }
+    handleNativeRequest({ type: "lookup_urls", urls }).then(sendResponse);
+    return true;
+  }
+
   sendResponse({ success: false, error: `Unknown message type: ${(message as Record<string, unknown>).type}` });
   return false;
 }
@@ -129,7 +239,7 @@ function showNotification(
       type: "basic",
       title,
       message,
-      iconUrl: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48'%3E%3Crect width='48' height='48' rx='8' fill='%234F46E5'/%3E%3Ctext x='50%25' y='55%25' text-anchor='middle' dominant-baseline='middle' fill='white' font-size='24' font-family='sans-serif'%3EA%3C/text%3E%3C/svg%3E",
+      iconUrl: "icons/icon-128.png",
     });
   } catch {
     // Notification API may not be available; fail silently
@@ -174,28 +284,36 @@ function handleContextMenuClick(
     return;
   }
 
-  const nativeRequest: NativeRequest = {
-    type: "save",
-    url,
-    title: tab?.title,
-    selected_text: info.selectionText,
-  };
+  // Snapshot the tab so pages the CLI cannot fetch (e.g. LinkedIn) still save with content.
+  const snapshot = tab?.id !== undefined ? queryPageHtml(tab.id, url) : Promise.resolve(undefined);
 
-  handleNativeRequest(nativeRequest).then((response) => {
-    if (response.success && response.data.type === "save_result") {
-      showNotification(
-        `agentmark-save-${Date.now()}`,
-        "Saved to AgentMark",
-        `${tab?.title ?? url} (${response.data.status})`,
-      );
-    } else if (!response.success) {
-      showNotification(
-        `agentmark-error-${Date.now()}`,
-        "AgentMark Save Failed",
-        response.error,
-      );
-    }
-  });
+  const saving = snapshot.then((page_html) =>
+    handleNativeRequest({
+      type: "save",
+      url,
+      title: tab?.title,
+      selected_text: info.selectionText,
+      page_html,
+    }),
+  );
+  if (tab?.id !== undefined) void toolbarIcon.trackTabSave(tab.id, url, saving);
+
+  saving
+    .then((response) => {
+      if (response.success && response.data.type === "save_result") {
+        showNotification(
+          `agentmark-save-${Date.now()}`,
+          "Saved to AgentMark",
+          `${tab?.title ?? url} (${response.data.status})`,
+        );
+      } else if (!response.success) {
+        showNotification(
+          `agentmark-error-${Date.now()}`,
+          "AgentMark Save Failed",
+          response.error,
+        );
+      }
+    });
 }
 
 // --- Listener registration (must be at module scope for MV3) ---
@@ -214,6 +332,11 @@ chrome.contextMenus.onClicked.addListener(handleContextMenuClick);
 
 chrome.commands.onCommand.addListener(handleCommand);
 
+// Chrome resets a tab's icon on navigation, so every page load repaints it.
+chrome.tabs.onUpdated.addListener(toolbarIcon.handleTabUpdated);
+chrome.tabs.onActivated.addListener(toolbarIcon.handleTabActivated);
+chrome.tabs.onRemoved.addListener(toolbarIcon.handleTabRemoved);
+
 // Exported for testing
 export {
   ensureContextMenu,
@@ -224,6 +347,7 @@ export {
   handleCommand,
   openSidePanel,
   showNotification,
+  toolbarIcon,
   CONTEXT_MENU_ID,
   SIDEPANEL_MENU_ID,
 };

@@ -189,6 +189,27 @@ detect_target() {
     esac
 }
 
+# --- Post-install binary security ---
+# Ensures the installed binary is allowed to execute on the host OS.
+# Without these steps the binary may be silently blocked (e.g. by
+# macOS Gatekeeper), causing Chrome native messaging to time out.
+
+secure_binary() {
+    case "$(uname -s)" in
+        Darwin)
+            # Strip quarantine / provenance extended attributes
+            if command -v xattr >/dev/null 2>&1; then
+                xattr -dr com.apple.quarantine "$INSTALLED_BINARY" 2>/dev/null || true
+                xattr -dr com.apple.provenance "$INSTALLED_BINARY" 2>/dev/null || true
+            fi
+            # Ad-hoc code sign so Gatekeeper allows execution
+            if command -v codesign >/dev/null 2>&1; then
+                codesign --force --sign - "$INSTALLED_BINARY" 2>/dev/null || true
+            fi
+            ;;
+    esac
+}
+
 # --- Download pre-built binary from GitHub Releases ---
 
 download_release() {
@@ -244,6 +265,7 @@ download_release() {
     chmod +x "$bin_dir/agentmark"
 
     INSTALLED_BINARY="$bin_dir/agentmark"
+    secure_binary
     ok_detail "Binary installed" "$INSTALLED_BINARY"
 }
 
@@ -313,6 +335,7 @@ build_from_source() {
     chmod +x "$bin_dir/agentmark"
 
     INSTALLED_BINARY="$bin_dir/agentmark"
+    secure_binary
     ok_detail "Binary installed" "$INSTALLED_BINARY"
 }
 

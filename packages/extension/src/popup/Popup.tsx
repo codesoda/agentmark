@@ -6,6 +6,8 @@ import {
   loadLastUsedIntent,
   saveLastUsedIntent,
   querySelectedText,
+  queryPageHtml,
+  takePendingSave,
   isConnectionError,
 } from "../shared/runtime";
 import type { SaveResultResponse } from "../shared/types";
@@ -46,6 +48,8 @@ export default function Popup() {
   const tabUrl = useRef<string>("");
   const tabTitle = useRef<string | undefined>(undefined);
   const tabId = useRef<number | undefined>(undefined);
+  // Captured once so the quick-save and the form re-save see identical content.
+  const pageHtml = useRef<string | undefined>(undefined);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimer.current) {
@@ -67,25 +71,42 @@ export default function Popup() {
     dispatched.current = true;
 
     (async () => {
-      let tab;
-      try {
-        tab = await queryActiveTab();
-      } catch (err) {
-        setQuickSaveState({
-          status: "error",
-          message: err instanceof Error ? err.message : String(err),
-          isConnectionError: false,
-        });
-        return;
+      // An in-page button (e.g. on a LinkedIn post) may have prepared this save:
+      // then the popup saves that item rather than the page in the active tab.
+      const pending = await takePendingSave();
+
+      let target: { url: string; title?: string; favIconUrl?: string };
+      if (pending) {
+        target = { url: pending.url, title: pending.title };
+        pageHtml.current = pending.page_html;
+      } else {
+        let tab;
+        try {
+          tab = await queryActiveTab();
+        } catch (err) {
+          setQuickSaveState({
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+            isConnectionError: false,
+          });
+          return;
+        }
+        target = tab;
+        tabId.current = tab.id;
       }
 
-      tabUrl.current = tab.url;
-      tabTitle.current = tab.title;
-      tabId.current = tab.id;
+      tabUrl.current = target.url;
+      tabTitle.current = target.title;
 
-      setQuickSaveState({ status: "saving", title: tab.title, favIconUrl: tab.favIconUrl });
+      setQuickSaveState({ status: "saving", title: target.title, favIconUrl: target.favIconUrl });
 
-      const response = await sendSaveMessage(tab.url, tab.title);
+      if (!pending && tabId.current !== undefined) {
+        pageHtml.current = await queryPageHtml(tabId.current, target.url);
+      }
+
+      const response = await sendSaveMessage(target.url, target.title, {
+        page_html: pageHtml.current,
+      });
 
       if (!response.success) {
         setQuickSaveState({
@@ -99,8 +120,8 @@ export default function Popup() {
       const data = response.data as SaveResultResponse;
       setQuickSaveState({
         status: "success",
-        title: tab.title,
-        favIconUrl: tab.favIconUrl,
+        title: target.title,
+        favIconUrl: target.favIconUrl,
         bookmarkId: data.id,
         saveStatus: data.status,
       });
@@ -155,6 +176,7 @@ export default function Popup() {
       note: values.note,
       action: values.action,
       selected_text: values.selected_text,
+      page_html: pageHtml.current,
     });
 
     if (!response.success) {
@@ -265,8 +287,9 @@ export default function Popup() {
           <p className="mt-1 text-sm text-gray-600">{quickSaveState.message}</p>
           {quickSaveState.isConnectionError && (
             <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" data-testid="install-guidance">
-              <p className="font-medium">Native host not connected</p>
-              <p className="mt-2">Run this in your terminal, then reload the extension:</p>
+              <p className="font-medium">Couldn&apos;t reach AgentMark</p>
+              <p className="mt-2">1. Reload the extension at <span className="font-mono">chrome://extensions</span> (↻ icon), then try again.</p>
+              <p className="mt-2">2. If it still fails, register the native host and reload:</p>
               <code className="mt-1 block rounded bg-amber-100 p-1.5 text-[11px] select-all">agentmark install-extension --extension-id {chrome.runtime?.id ?? "YOUR_ID"}</code>
             </div>
           )}

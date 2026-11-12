@@ -1,9 +1,20 @@
 {
   "manifest_version": 3,
   "name": "AgentMark",
-  "version": "0.2.0",
+  "version": "0.2.5",
   "description": "Agent-first bookmarking for local AI workflows",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
+    "default_icon": {
+      "16": "icons/toolbar-idle-16.png",
+      "32": "icons/toolbar-idle-32.png",
+      "48": "icons/toolbar-idle-48.png"
+    },
     "default_popup": "src/popup/index.html"
   },
   "side_panel": {
@@ -20,7 +31,32 @@
     "nativeMessaging",
     "notifications",
     "storage",
-    "scripting"
+    "scripting",
+    "tabs"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/*"
+      ],
+      "js": [
+        "content/content-linkedin-main.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.linkedin.com/*",
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://news.ycombinator.com/*"
+      ],
+      "js": [
+        "content/content-posts.js"
+      ],
+      "run_at": "document_idle"
+    }
   ],
   "commands": {
     "_execute_action": {

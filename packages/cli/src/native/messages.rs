@@ -49,6 +49,9 @@ pub enum IncomingMessage {
         selected_text: Option<String>,
         #[serde(default)]
         action: Option<String>,
+        /// HTML snapshot of the live tab, used when the CLI cannot fetch the URL.
+        #[serde(default)]
+        page_html: Option<String>,
     },
     /// Health check.
     Status,
@@ -68,6 +71,8 @@ pub enum IncomingMessage {
         id: String,
         changes: BookmarkChanges,
     },
+    /// Ask which of these URLs are already bookmarked (index only).
+    LookupUrls { urls: Vec<String> },
 }
 
 /// Messages sent from the native host back to the Chrome extension.
@@ -90,6 +95,8 @@ pub enum OutgoingMessage {
     ShowResult { bookmark: BookmarkDetail },
     /// Result of a bookmark update.
     UpdateResult { bookmark: BookmarkDetail },
+    /// The request URLs that are already bookmarked, verbatim and in request order.
+    LookupUrlsResult { saved: Vec<String> },
     /// Error response for any failed operation.
     Error { message: String },
 }
@@ -178,7 +185,7 @@ impl IncomingMessage {
             .ok_or(MessageError::MissingType)?;
 
         match type_str {
-            "save" | "status" | "list_collections" | "list" | "show" | "update" => {
+            "save" | "status" | "list_collections" | "list" | "show" | "update" | "lookup_urls" => {
                 // Use serde for full field validation.
                 serde_json::from_value(value)
                     .map_err(|e| MessageError::InvalidFields(e.to_string()))
@@ -225,6 +232,7 @@ mod tests {
                 note: Some("interesting".into()),
                 selected_text: Some("some excerpt".into()),
                 action: Some("read_later".into()),
+                page_html: None,
             }
         );
     }
@@ -243,6 +251,7 @@ mod tests {
                 note: None,
                 selected_text: None,
                 action: None,
+                page_html: None,
             }
         );
     }
@@ -387,6 +396,7 @@ mod tests {
             note: None,
             selected_text: None,
             action: None,
+            page_html: None,
         };
         let value = serde_json::to_value(&msg).unwrap();
         let back = IncomingMessage::from_value(value).unwrap();
@@ -711,5 +721,60 @@ mod tests {
         let value = msg.to_value().unwrap();
         assert_eq!(value["type"], "update_result");
         assert_eq!(value["bookmark"]["state"], "processed");
+    }
+
+    // -- LookupUrls --
+
+    #[test]
+    fn deserialize_lookup_urls() {
+        let value = json!({"type": "lookup_urls", "urls": ["https://a.com", "not a url"]});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        assert_eq!(
+            msg,
+            IncomingMessage::LookupUrls {
+                urls: vec!["https://a.com".into(), "not a url".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_lookup_urls_missing_urls() {
+        let value = json!({"type": "lookup_urls"});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(matches!(err, MessageError::InvalidFields(_)), "{err:?}");
+    }
+
+    #[test]
+    fn deserialize_lookup_urls_invalid_urls() {
+        let value = json!({"type": "lookup_urls", "urls": "https://a.com"});
+        let err = IncomingMessage::from_value(value).unwrap_err();
+        assert!(matches!(err, MessageError::InvalidFields(_)), "{err:?}");
+    }
+
+    #[test]
+    fn serialize_lookup_urls_result() {
+        let msg = OutgoingMessage::LookupUrlsResult {
+            saved: vec!["https://a.com/?utm_source=x".into()],
+        };
+        let value = msg.to_value().unwrap();
+        assert_eq!(
+            value,
+            json!({"type": "lookup_urls_result", "saved": ["https://a.com/?utm_source=x"]})
+        );
+        let back: OutgoingMessage = serde_json::from_value(value).unwrap();
+        assert_eq!(back, msg);
+    }
+
+    #[test]
+    fn incoming_lookup_urls_serde_roundtrip() {
+        let msg = IncomingMessage::LookupUrls {
+            urls: vec!["https://a.com".into()],
+        };
+        let value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(
+            value,
+            json!({"type": "lookup_urls", "urls": ["https://a.com"]})
+        );
+        assert_eq!(IncomingMessage::from_value(value).unwrap(), msg);
     }
 }

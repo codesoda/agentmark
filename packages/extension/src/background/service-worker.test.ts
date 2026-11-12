@@ -27,8 +27,18 @@ import {
   openSidePanel,
   CONTEXT_MENU_ID,
   SIDEPANEL_MENU_ID,
+  toolbarIcon,
 } from "./service-worker";
 import { getNativeClient } from "../shared/native-messaging";
+import { SAVE_RESULT_HOLD_MS } from "./toolbar-icon";
+
+// Listeners are registered once, on import, against the mock that existed then;
+// capture them before beforeEach swaps the mock out and clears call history.
+const registeredTabListeners = {
+  onUpdated: vi.mocked(chrome.tabs.onUpdated.addListener).mock.calls[0]?.[0],
+  onActivated: vi.mocked(chrome.tabs.onActivated.addListener).mock.calls[0]?.[0],
+  onRemoved: vi.mocked(chrome.tabs.onRemoved.addListener).mock.calls[0]?.[0],
+};
 
 function getMockClient() {
   return getNativeClient() as unknown as {
@@ -245,6 +255,111 @@ describe("service-worker", () => {
     });
   });
 
+  describe("saves started by an in-page button", () => {
+    const post = {
+      type: "open_save_popup" as const,
+      url: "https://www.linkedin.com/feed/update/urn:li:share:42/",
+      title: "LinkedIn post by Ada Lovelace",
+      page_html: "<html><body>the post</body></html>",
+    };
+    const fromTab = { tab: { id: 7 } } as chrome.runtime.MessageSender;
+
+    function send(message: unknown, sender = {} as chrome.runtime.MessageSender) {
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(message as Parameters<typeof handleRuntimeMessage>[0], sender, sendResponse);
+      return sendResponse;
+    }
+
+    it("opens the popup and hands it the save exactly once", async () => {
+      const mockClient = getMockClient();
+      const opened = send(post, fromTab);
+      await vi.waitFor(() => {
+        expect(opened).toHaveBeenCalledWith({ success: true, popup_opened: true });
+      });
+      expect(chrome.action.openPopup).toHaveBeenCalledTimes(1);
+      expect(mockClient.sendRequest).not.toHaveBeenCalled();
+
+      expect(send({ type: "take_pending_save" })).toHaveBeenCalledWith({
+        pending: { url: post.url, title: post.title, page_html: post.page_html },
+      });
+      expect(send({ type: "take_pending_save" })).toHaveBeenCalledWith({ pending: null });
+    });
+
+    it("tells the originating tab when the popup's save finishes", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({ type: "save_result", id: "1", path: "/a", status: "created" });
+      const opened = send(post, fromTab);
+      await vi.waitFor(() => expect(opened).toHaveBeenCalled());
+      send({ type: "take_pending_save" });
+
+      const saved = send({ type: "save", url: post.url, title: post.title, page_html: post.page_html });
+      await vi.waitFor(() => expect(saved).toHaveBeenCalled());
+
+      expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(7, {
+        type: "agentmark:save-result",
+        url: post.url,
+        success: true,
+        error: undefined,
+      });
+    });
+
+    it("does not notify a tab about unrelated saves", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({ type: "save_result", id: "1", path: "/a", status: "created" });
+      const opened = send(post, fromTab);
+      await vi.waitFor(() => expect(opened).toHaveBeenCalled());
+      send({ type: "take_pending_save" });
+
+      const saved = send({ type: "save", url: "https://example.com/other" });
+      await vi.waitFor(() => expect(saved).toHaveBeenCalled());
+
+      expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("saves directly when the popup cannot be opened", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({ type: "save_result", id: "1", path: "/a", status: "created" });
+      (chrome.action.openPopup as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error("Could not find an active browser window."),
+      );
+
+      const response = send(post, fromTab);
+
+      await vi.waitFor(() => {
+        expect(response).toHaveBeenCalledWith({
+          success: true,
+          data: { type: "save_result", id: "1", path: "/a", status: "created" },
+        });
+      });
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({
+        type: "save",
+        url: post.url,
+        title: post.title,
+        page_html: post.page_html,
+      });
+      // Nothing is left behind for a later toolbar click to pick up.
+      expect(send({ type: "take_pending_save" })).toHaveBeenCalledWith({ pending: null });
+    });
+
+    it("drops a pending save the popup did not collect in time", async () => {
+      vi.useFakeTimers();
+      try {
+        const opened = send(post, fromTab);
+        await vi.waitFor(() => expect(opened).toHaveBeenCalled());
+        vi.advanceTimersByTime(6_000);
+        expect(send({ type: "take_pending_save" })).toHaveBeenCalledWith({ pending: null });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rejects unsupported URLs without opening the popup", () => {
+      const response = send({ ...post, url: "chrome://extensions" }, fromTab);
+      expect(response).toHaveBeenCalledWith({ success: false, error: "Unsupported or missing URL" });
+      expect(chrome.action.openPopup).not.toHaveBeenCalled();
+    });
+  });
+
   describe("handleContextMenuClick", () => {
     it("saves page URL from context menu click", async () => {
       const mockClient = getMockClient();
@@ -262,6 +377,25 @@ describe("service-worker", () => {
           title: "Test Page",
           selected_text: undefined,
         });
+      });
+    });
+
+    it("includes an HTML snapshot of the tab when it has an id", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({ type: "save_result", id: "1", path: "/a", status: "created" });
+      (chrome.scripting.executeScript as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { result: "<html><body>post</body></html>" },
+      ]);
+
+      handleContextMenuClick(
+        { menuItemId: CONTEXT_MENU_ID, pageUrl: "https://example.com", editable: false } as chrome.contextMenus.OnClickData,
+        { id: 9, title: "Test Page" } as chrome.tabs.Tab,
+      );
+
+      await vi.waitFor(() => {
+        expect(mockClient.sendRequest).toHaveBeenCalledWith(
+          expect.objectContaining({ page_html: "<html><body>post</body></html>" }),
+        );
       });
     });
 
@@ -732,6 +866,191 @@ describe("service-worker", () => {
           error: "Host disconnected",
         });
       });
+    });
+  });
+
+  describe("handleRuntimeMessage - lookup_urls", () => {
+    it("forwards supported URLs to the native host", async () => {
+      const mockClient = getMockClient();
+      const nativeResponse = { type: "lookup_urls_result" as const, saved: ["https://x.com/ada/status/1"] };
+      mockClient.sendRequest.mockResolvedValue(nativeResponse);
+
+      const sendResponse = vi.fn();
+      const result = handleRuntimeMessage(
+        {
+          type: "lookup_urls",
+          urls: ["https://x.com/ada/status/1", "chrome://settings", 42, "http://news.ycombinator.com/item?id=1"] as string[],
+        },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      expect(result).toBe(true);
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({ success: true, data: nativeResponse });
+      });
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({
+        type: "lookup_urls",
+        urls: ["https://x.com/ada/status/1", "http://news.ycombinator.com/item?id=1"],
+      });
+    });
+
+    it("caps a lookup at 200 URLs", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue({ type: "lookup_urls_result", saved: [] });
+      const urls = Array.from({ length: 250 }, (_, i) => `https://news.ycombinator.com/item?id=${i}`);
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage({ type: "lookup_urls", urls }, {} as chrome.runtime.MessageSender, sendResponse);
+
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(mockClient.sendRequest).toHaveBeenCalledWith({ type: "lookup_urls", urls: urls.slice(0, 200) });
+    });
+
+    it("answers at once, without the native host, when no URL is usable", () => {
+      const mockClient = getMockClient();
+      for (const urls of [[], ["chrome://settings", "not a url"], "https://a.example/", undefined]) {
+        const sendResponse = vi.fn();
+        const result = handleRuntimeMessage(
+          { type: "lookup_urls", urls } as unknown as import("../shared/types").RuntimeMessage,
+          {} as chrome.runtime.MessageSender,
+          sendResponse,
+        );
+
+        expect(result).toBe(false);
+        expect(sendResponse).toHaveBeenCalledWith({
+          success: true,
+          data: { type: "lookup_urls_result", saved: [] },
+        });
+      }
+      expect(mockClient.sendRequest).not.toHaveBeenCalled();
+    });
+
+    it("reports a native failure", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockRejectedValue(new Error("Native host has exited"));
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(
+        { type: "lookup_urls", urls: ["https://a.example/"] },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({ success: false, error: "Native host has exited" });
+      });
+    });
+  });
+
+  describe("toolbar icon", () => {
+    const PAGE = "https://example.com/page";
+    const saveResult = { type: "save_result", id: "1", path: "/a", status: "created" };
+
+    function looks(tabId: number): string[] {
+      return (chrome.action.setIcon as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([details]) => details.tabId === tabId)
+        .map(([details]) => details.path[16].replace(/^icons\/toolbar-(.+)-16\.png$/, "$1"));
+    }
+
+    it("registers the tab listeners at load", () => {
+      expect(registeredTabListeners.onUpdated).toBe(toolbarIcon.handleTabUpdated);
+      expect(registeredTabListeners.onActivated).toBe(toolbarIcon.handleTabActivated);
+      expect(registeredTabListeners.onRemoved).toBe(toolbarIcon.handleTabRemoved);
+    });
+
+    it("marks the active tab through a popup save of its page", async () => {
+      vi.useFakeTimers();
+      try {
+        const mockClient = getMockClient();
+        mockClient.sendRequest.mockResolvedValue(saveResult);
+        chromeMock.tabs.query.mockResolvedValue([{ id: 21, url: PAGE }]);
+        chromeMock.tabs.get.mockResolvedValue({ id: 21, url: PAGE });
+
+        const sendResponse = vi.fn();
+        handleRuntimeMessage({ type: "save", url: PAGE }, {} as chrome.runtime.MessageSender, sendResponse);
+        await vi.waitFor(() => expect(looks(21)).toEqual(["saving", "saved-fresh"]));
+        expect(sendResponse).toHaveBeenCalledWith({ success: true, data: saveResult });
+
+        await vi.advanceTimersByTimeAsync(SAVE_RESULT_HOLD_MS);
+        expect(looks(21)).toEqual(["saving", "saved-fresh", "saved"]);
+        // Only the save itself reached the native host.
+        expect(mockClient.sendRequest).toHaveBeenCalledTimes(1);
+      } finally {
+        toolbarIcon.forget(21);
+        vi.useRealTimers();
+      }
+    });
+
+    it("leaves the tab alone when the popup saves a post on it", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue(saveResult);
+      chromeMock.tabs.query.mockResolvedValue([{ id: 22, url: PAGE }]);
+      chromeMock.tabs.get.mockResolvedValue({ id: 22, url: PAGE });
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(
+        { type: "save", url: "https://www.linkedin.com/feed/update/urn:li:share:42/" },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalled());
+      expect(chromeMock.tabs.query).toHaveBeenCalledWith({ active: true, lastFocusedWindow: true });
+      expect(chrome.action.setIcon).not.toHaveBeenCalled();
+    });
+
+    it("shows a failed context-menu save on its tab, then repaints from the index", async () => {
+      vi.useFakeTimers();
+      try {
+        const mockClient = getMockClient();
+        mockClient.sendRequest.mockImplementation(async (request: { type: string }) =>
+          request.type === "save"
+            ? { type: "error", message: "disk full" }
+            : { type: "lookup_urls_result", saved: [] },
+        );
+        chromeMock.tabs.get.mockResolvedValue({ id: 23, url: PAGE });
+
+        handleContextMenuClick(
+          { menuItemId: CONTEXT_MENU_ID, pageUrl: PAGE, editable: false } as chrome.contextMenus.OnClickData,
+          { id: 23, url: PAGE, title: "Page" } as chrome.tabs.Tab,
+        );
+        await vi.waitFor(() => expect(looks(23)).toEqual(["saving", "error"]));
+
+        await vi.advanceTimersByTimeAsync(SAVE_RESULT_HOLD_MS);
+        expect(looks(23)).toEqual(["saving", "error", "idle"]);
+        expect(mockClient.sendRequest).toHaveBeenCalledTimes(2);
+        expect(mockClient.sendRequest).toHaveBeenLastCalledWith({ type: "lookup_urls", urls: [PAGE] });
+      } finally {
+        toolbarIcon.forget(23);
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not mark the tab when the direct-save fallback saves a post", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue(saveResult);
+      (chrome.action.openPopup as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("no window"));
+      chromeMock.tabs.get.mockResolvedValue({ id: 24, url: "https://www.linkedin.com/feed/" });
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage(
+        { type: "open_save_popup", url: "https://www.linkedin.com/feed/update/urn:li:share:42/" },
+        { tab: { id: 24 } } as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ success: true, data: saveResult }));
+      await vi.waitFor(() => expect(chromeMock.tabs.get).toHaveBeenCalledWith(24));
+      expect(chrome.action.setIcon).not.toHaveBeenCalled();
+    });
+
+    it("still answers the popup when icon work fails", async () => {
+      const mockClient = getMockClient();
+      mockClient.sendRequest.mockResolvedValue(saveResult);
+      chromeMock.tabs.query.mockRejectedValue(new Error("no window"));
+
+      const sendResponse = vi.fn();
+      handleRuntimeMessage({ type: "save", url: PAGE }, {} as chrome.runtime.MessageSender, sendResponse);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ success: true, data: saveResult }));
     });
   });
 

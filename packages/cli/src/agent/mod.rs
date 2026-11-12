@@ -1,12 +1,16 @@
 mod claude;
 mod codex;
+mod pi;
 pub mod prompt;
 pub mod provider;
 
-pub use provider::{AgentError, AgentProvider, EnrichmentRequest, EnrichmentResponse};
+pub use provider::{
+    AgentError, AgentProvider, ArticleRequest, EnrichmentRequest, EnrichmentResponse,
+};
 
 use claude::ClaudeProvider;
 use codex::CodexProvider;
+use pi::PiProvider;
 use provider::RealRunner;
 use tracing::{debug, instrument};
 
@@ -28,6 +32,7 @@ pub fn create_provider(
     match agent.as_str() {
         "claude" => Ok(Box::new(ClaudeProvider::new(sp, Box::new(RealRunner)))),
         "codex" => Ok(Box::new(CodexProvider::new(sp, Box::new(RealRunner)))),
+        "pi" => Ok(Box::new(PiProvider::new(sp, Box::new(RealRunner)))),
         _ => Err(AgentError::InvalidAgent {
             value: default_agent.to_string(),
         }),
@@ -50,6 +55,12 @@ mod tests {
     fn factory_creates_codex_provider() {
         let provider = create_provider("codex", None);
         assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn factory_creates_pi_provider() {
+        assert!(create_provider("pi", None).is_ok());
+        assert!(create_provider(" Pi ", None).is_ok());
     }
 
     #[test]

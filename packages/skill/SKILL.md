@@ -27,7 +27,7 @@ If not found: `curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/ma
 
 ## Configuration
 
-Config lives at `~/.agentmark/config.toml`. Key settings: `default_agent` (claude/codex), `storage_path` (default: `~/agentmark`), `system_prompt` (custom enrichment prompt), `enrichment.enabled` (default: true). Index DB at `~/.agentmark/index.db`.
+Config lives at `~/.agentmark/config.toml`. Key settings: `default_agent` (claude/codex/pi), `storage_path` (default: `~/agentmark`), `system_prompt` (custom enrichment prompt), `enrichment.enabled` (default: true). Index DB at `~/.agentmark/index.db`.
 
 ## CLI Commands
 
@@ -48,6 +48,8 @@ Config lives at `~/.agentmark/config.toml`. Key settings: `default_agent` (claud
 `agentmark open ID` — open bookmark URL in default browser.
 
 `agentmark reprocess ID` — re-extract and re-enrich. Flag: `--all` for all bookmarks.
+
+`agentmark delete ID` — delete a bookmark and its bundle directory. Asks for confirmation; pass `--yes` (`-y`) to skip it, which a non-interactive agent must do.
 
 ## Bookmark Fields
 

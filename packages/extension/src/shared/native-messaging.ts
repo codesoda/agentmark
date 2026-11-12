@@ -15,7 +15,9 @@ import {
 const MAX_UNSENT_QUEUE = 10;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STATUS_TIMEOUT_MS = 5_000;
-const MAX_SELECTED_TEXT_LENGTH = 500_000; // Well under 1 MiB frame limit
+const MAX_SELECTED_TEXT_LENGTH = 500_000;
+// The native host rejects frames over 16 MiB. Drop the snapshot rather than fail the save.
+const MAX_PAGE_HTML_BYTES = 12 * 1024 * 1024;
 
 interface PendingRequest {
   resolve: (response: NativeResponse) => void;
@@ -78,15 +80,21 @@ export class NativeMessagingClient {
   }
 
   private prepareRequest(request: NativeRequest): NativeRequest {
-    if (request.type === "save" && request.selected_text) {
-      if (request.selected_text.length > MAX_SELECTED_TEXT_LENGTH) {
-        return {
-          ...request,
-          selected_text: request.selected_text.slice(0, MAX_SELECTED_TEXT_LENGTH),
-        };
+    if (request.type !== "save") return request;
+    let prepared = request;
+    if (prepared.selected_text && prepared.selected_text.length > MAX_SELECTED_TEXT_LENGTH) {
+      prepared = {
+        ...prepared,
+        selected_text: prepared.selected_text.slice(0, MAX_SELECTED_TEXT_LENGTH),
+      };
+    }
+    if (prepared.page_html !== undefined) {
+      const bytes = new TextEncoder().encode(JSON.stringify(prepared.page_html)).length;
+      if (bytes > MAX_PAGE_HTML_BYTES) {
+        prepared = { ...prepared, page_html: undefined };
       }
     }
-    return request;
+    return prepared;
   }
 
   private async ensureConnected(): Promise<void> {

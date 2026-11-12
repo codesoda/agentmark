@@ -428,7 +428,8 @@ fn reprocess_all(
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Read a yes/no confirmation from stdin. Default is No.
-fn read_confirmation(reader: &mut dyn BufRead) -> bool {
+/// Shared with `delete` so every prompt accepts the same answers.
+pub(crate) fn read_confirmation(reader: &mut dyn BufRead) -> bool {
     let mut buf = String::new();
     match reader.read_line(&mut buf) {
         Ok(0) => false, // EOF

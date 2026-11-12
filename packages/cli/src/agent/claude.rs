@@ -1,8 +1,9 @@
-use super::prompt::build_prompt;
+use super::prompt::{build_article_prompt, build_prompt, PromptParts};
 use tracing::{debug, instrument, warn};
 
 use super::provider::{
-    normalize_response, AgentError, AgentProvider, EnrichmentRequest, EnrichmentResponse,
+    extract_json_from_markdown, normalize_markdown, normalize_response, truncate_stderr,
+    AgentError, AgentProvider, ArticleRequest, EnrichmentRequest, EnrichmentResponse,
     ProcessOutput, ProcessRunner,
 };
 
@@ -27,6 +28,27 @@ impl AgentProvider for ClaudeProvider {
     fn enrich(&self, request: &EnrichmentRequest) -> Result<EnrichmentResponse, AgentError> {
         let parts = build_prompt(request, self.system_prompt.as_deref());
 
+        let stdout = self.run(&parts)?;
+
+        // Claude --output-format json wraps the response in a JSON object
+        // with a "result" field containing the text response.
+        let raw_response = parse_claude_output(&stdout)?;
+        normalize_response(raw_response, "claude")
+    }
+
+    #[instrument(skip(self, request), fields(url = %request.url))]
+    fn render_article(&self, request: &ArticleRequest) -> Result<String, AgentError> {
+        let parts = build_article_prompt(request, self.system_prompt.as_deref());
+        let stdout = self.run(&parts)?;
+        // Prefer the envelope's result text; fall back to raw stdout.
+        let text = extract_result_text(&stdout).unwrap_or(stdout);
+        normalize_markdown(&text, "claude")
+    }
+}
+
+impl ClaudeProvider {
+    /// Invoke the Claude CLI once with the given prompt and return its stdout.
+    fn run(&self, parts: &PromptParts) -> Result<String, AgentError> {
         let mut args: Vec<&str> = vec![
             "--print", // non-interactive, print response only
             "--output-format",
@@ -37,11 +59,9 @@ impl AgentProvider for ClaudeProvider {
         ];
 
         // Apply system prompt via CLI flag if available
-        let system_prompt_str;
         if let Some(ref sp) = parts.system_prompt {
-            system_prompt_str = sp.clone();
             args.push("--system-prompt");
-            args.push(&system_prompt_str);
+            args.push(sp);
         }
 
         // Disable tool access for safety
@@ -67,42 +87,64 @@ impl AgentProvider for ClaudeProvider {
         }
 
         debug!("claude CLI returned successfully");
-
-        // Claude --output-format json wraps the response in a JSON object
-        // with a "result" field containing the text response.
-        let raw_response = parse_claude_output(&output.stdout)?;
-        normalize_response(raw_response, "claude")
+        Ok(output.stdout)
     }
 }
 
-/// Parse Claude CLI JSON output. The CLI with `--output-format json` returns
-/// a JSON object with a `result` field containing the model's text output,
-/// which itself should be valid JSON matching our enrichment schema.
+/// Extract the `result` string from Claude CLI JSON output.
+///
+/// The CLI `--output-format json` has two known shapes:
+///   1. **Streaming array** (current): a JSON array of event objects. The final
+///      element with `"type": "result"` contains a `"result"` string field.
+///   2. **Single envelope** (legacy): a single JSON object with a `"result"` field.
+fn extract_result_text(stdout: &str) -> Option<String> {
+    let trimmed = stdout.trim();
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+
+    // Streaming array: scan for the result event
+    if let Some(arr) = value.as_array() {
+        for item in arr.iter().rev() {
+            if item.get("type").and_then(|v| v.as_str()) == Some("result") {
+                return item
+                    .get("result")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+            }
+        }
+        return None;
+    }
+
+    // Single envelope object
+    value
+        .get("result")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Parse Claude CLI JSON output into an [`EnrichmentResponse`].
 fn parse_claude_output(stdout: &str) -> Result<EnrichmentResponse, AgentError> {
     let trimmed = stdout.trim();
 
-    // First try: the output is a Claude CLI JSON envelope with a "result" field
-    if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(result_text) = envelope.get("result").and_then(|v| v.as_str()) {
-            // The result field contains the model's text response as a string.
-            // Try to parse it as our EnrichmentResponse.
-            if let Ok(resp) = serde_json::from_str::<EnrichmentResponse>(result_text) {
+    // Try to extract the result text from the CLI envelope / stream
+    if let Some(result_text) = extract_result_text(trimmed) {
+        // The result field contains the model's text response as a string.
+        // Try to parse it as our EnrichmentResponse.
+        if let Ok(resp) = serde_json::from_str::<EnrichmentResponse>(&result_text) {
+            return Ok(resp);
+        }
+        // Sometimes the model wraps JSON in markdown code fences
+        if let Some(extracted) = extract_json_from_markdown(&result_text) {
+            if let Ok(resp) = serde_json::from_str::<EnrichmentResponse>(&extracted) {
                 return Ok(resp);
             }
-            // Sometimes the model wraps JSON in markdown code fences
-            if let Some(extracted) = extract_json_from_markdown(result_text) {
-                if let Ok(resp) = serde_json::from_str::<EnrichmentResponse>(&extracted) {
-                    return Ok(resp);
-                }
-            }
-            return Err(AgentError::InvalidResponse {
-                provider: "claude",
-                reason: "result field does not contain valid enrichment JSON".to_string(),
-            });
         }
+        return Err(AgentError::InvalidResponse {
+            provider: "claude",
+            reason: "result field does not contain valid enrichment JSON".to_string(),
+        });
     }
 
-    // Second try: raw JSON output (direct EnrichmentResponse)
+    // Fallback: raw JSON output (direct EnrichmentResponse)
     if let Ok(resp) = serde_json::from_str::<EnrichmentResponse>(trimmed) {
         return Ok(resp);
     }
@@ -111,26 +153,6 @@ fn parse_claude_output(stdout: &str) -> Result<EnrichmentResponse, AgentError> {
         provider: "claude",
         reason: "output is not valid JSON".to_string(),
     })
-}
-
-/// Extract JSON content from markdown code fences (```json ... ``` or ``` ... ```).
-fn extract_json_from_markdown(text: &str) -> Option<String> {
-    let start = text.find("```")?;
-    let after_fence = &text[start + 3..];
-    // Skip optional language tag on the same line
-    let content_start = after_fence.find('\n')? + 1;
-    let content = &after_fence[content_start..];
-    let end = content.find("```")?;
-    Some(content[..end].trim().to_string())
-}
-
-fn truncate_stderr(stderr: &str) -> String {
-    let trimmed = stderr.trim();
-    if trimmed.len() <= 500 {
-        trimmed.to_string()
-    } else {
-        format!("{}... (truncated)", &trimmed[..500])
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -212,6 +234,20 @@ mod tests {
         assert_eq!(result.summary, "A Rust article.");
         assert_eq!(result.suggested_tags, vec!["rust"]);
         assert_eq!(result.suggested_collection, None);
+    }
+
+    #[test]
+    fn claude_success_with_streaming_array() {
+        let response_json = r#"{"summary":"A Rust article.","suggested_tags":["rust"],"suggested_collection":null}"#;
+        let escaped = response_json.replace('"', "\\\"");
+        let stream = format!(
+            r#"[{{"type":"system","subtype":"init"}},{{"type":"assistant","message":{{}}}},{{"type":"result","subtype":"success","result":"{escaped}"}}]"#
+        );
+        let runner = MockRunner::success(&stream);
+        let provider = ClaudeProvider::new(None, runner);
+        let result = provider.enrich(&sample_request()).unwrap();
+        assert_eq!(result.summary, "A Rust article.");
+        assert_eq!(result.suggested_tags, vec!["rust"]);
     }
 
     #[test]

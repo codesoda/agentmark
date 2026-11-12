@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use tracing::{debug, instrument, warn};
 
-use super::prompt::{build_prompt, ENRICHMENT_SCHEMA};
+use super::prompt::{build_article_prompt, build_prompt, ENRICHMENT_SCHEMA};
 use super::provider::{
-    normalize_response, AgentError, AgentProvider, EnrichmentRequest, EnrichmentResponse,
-    ProcessOutput, ProcessRunner,
+    normalize_markdown, normalize_response, truncate_stderr, AgentError, AgentProvider,
+    ArticleRequest, EnrichmentRequest, EnrichmentResponse, ProcessOutput, ProcessRunner,
 };
 
 /// Codex CLI provider. Invokes the local `codex` binary with structured
@@ -67,6 +67,32 @@ impl AgentProvider for CodexProvider {
         let raw_response = parse_codex_output(&output.stdout)?;
         normalize_response(raw_response, "codex")
     }
+
+    #[instrument(skip(self, request), fields(url = %request.url))]
+    fn render_article(&self, request: &ArticleRequest) -> Result<String, AgentError> {
+        let parts = build_article_prompt(request, self.system_prompt.as_deref());
+
+        // No output schema: the final message is the markdown document itself.
+        let args = ["exec", "--ephemeral", "--sandbox", "read-only"];
+        let output: ProcessOutput = self
+            .runner
+            .run("codex", &args, &parts.user_prompt)
+            .map_err(|source| AgentError::Spawn {
+                provider: "codex",
+                source,
+            })?;
+
+        if output.exit_code != 0 {
+            warn!(exit_code = output.exit_code, "codex CLI failed");
+            return Err(AgentError::ProcessFailed {
+                provider: "codex",
+                status: output.exit_code,
+                stderr: truncate_stderr(&output.stderr),
+            });
+        }
+
+        normalize_markdown(&output.stdout, "codex")
+    }
 }
 
 /// Write the enrichment JSON schema to a temp file. Returns the path.
@@ -122,15 +148,6 @@ fn parse_codex_output(stdout: &str) -> Result<EnrichmentResponse, AgentError> {
         provider: "codex",
         reason: "output is not valid enrichment JSON".to_string(),
     })
-}
-
-fn truncate_stderr(stderr: &str) -> String {
-    let trimmed = stderr.trim();
-    if trimmed.len() <= 500 {
-        trimmed.to_string()
-    } else {
-        format!("{}... (truncated)", &trimmed[..500])
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

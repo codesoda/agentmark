@@ -6,7 +6,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
-    #[error("invalid agent: {value} (expected \"claude\" or \"codex\")")]
+    #[error("invalid agent: {value} (expected \"claude\", \"codex\" or \"pi\")")]
     InvalidAgent { value: String },
 
     #[error("failed to spawn {provider} CLI: {source}")]
@@ -59,10 +59,70 @@ pub struct EnrichmentResponse {
     pub suggested_collection: Option<String>,
 }
 
+/// Request to turn a simplified HTML snapshot of a page into markdown.
+#[derive(Debug, Clone)]
+pub struct ArticleRequest {
+    pub url: String,
+    pub title: String,
+    /// Simplified page HTML (see `extract::simplify_html`), not the raw capture.
+    pub page_html: String,
+    /// The same page as fetched without login, simplified the same way.
+    /// Supplementary: it may hold content the snapshot lacks (e.g. comments).
+    pub fetched_html: Option<String>,
+}
+
 // ── Provider trait ──────────────────────────────────────────────────
 
 pub trait AgentProvider {
     fn enrich(&self, request: &EnrichmentRequest) -> Result<EnrichmentResponse, AgentError>;
+
+    /// Render a page snapshot as a faithful markdown document.
+    ///
+    /// Used for pages where generic article extraction does not apply
+    /// (profiles, feeds, app-like pages captured from the browser).
+    fn render_article(&self, request: &ArticleRequest) -> Result<String, AgentError>;
+}
+
+/// Normalizes model-written markdown: trims, unwraps a surrounding code fence,
+/// and rejects blank output.
+pub fn normalize_markdown(raw: &str, provider: &'static str) -> Result<String, AgentError> {
+    let mut text = raw.trim();
+    if text.starts_with("```") && text.ends_with("```") && text.len() >= 6 {
+        if let Some(first_newline) = text.find('\n') {
+            text = text[first_newline + 1..text.len() - 3].trim();
+        }
+    }
+    if text.is_empty() {
+        return Err(AgentError::InvalidResponse {
+            provider,
+            reason: "article markdown is blank".to_string(),
+        });
+    }
+    Ok(format!("{text}\n"))
+}
+
+/// Extract JSON content from markdown code fences (```json ... ``` or ``` ... ```).
+pub(crate) fn extract_json_from_markdown(text: &str) -> Option<String> {
+    let start = text.find("```")?;
+    let after_fence = &text[start + 3..];
+    // Skip optional language tag on the same line
+    let content_start = after_fence.find('\n')? + 1;
+    let content = &after_fence[content_start..];
+    let end = content.find("```")?;
+    Some(content[..end].trim().to_string())
+}
+
+pub(crate) fn truncate_stderr(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.len() <= 500 {
+        trimmed.to_string()
+    } else {
+        let mut end = 500;
+        while !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}... (truncated)", &trimmed[..end])
+    }
 }
 
 // ── Response normalization ──────────────────────────────────────────
@@ -136,6 +196,7 @@ impl ProcessRunner for RealRunner {
 
         let mut child = Command::new(program)
             .args(args)
+            .env("PATH", agent_search_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -158,11 +219,116 @@ impl ProcessRunner for RealRunner {
     }
 }
 
+/// Directories where agent CLIs and their runtimes (node, bun) are commonly
+/// installed, relative to `$HOME` unless absolute.
+const EXTRA_BIN_DIRS: &[&str] = &[
+    ".local/bin",
+    ".volta/bin",
+    ".bun/bin",
+    ".cargo/bin",
+    ".npm-global/bin",
+    ".pi/agent/bin",
+    ".claude/local",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+];
+
+/// `PATH` for agent subprocesses.
+///
+/// Chrome starts the native host with a bare system `PATH`, so agent CLIs
+/// installed in user directories would not be found. The inherited `PATH`
+/// keeps priority; well-known install directories are appended.
+fn agent_search_path() -> std::ffi::OsString {
+    build_search_path(
+        std::env::var_os("PATH"),
+        std::env::var_os("HOME").map(std::path::PathBuf::from),
+    )
+}
+
+fn build_search_path(
+    inherited: Option<std::ffi::OsString>,
+    home: Option<std::path::PathBuf>,
+) -> std::ffi::OsString {
+    let mut dirs: Vec<std::path::PathBuf> = inherited
+        .as_deref()
+        .map(|p| std::env::split_paths(p).collect())
+        .unwrap_or_default();
+    for extra in EXTRA_BIN_DIRS {
+        let dir = if extra.starts_with('/') {
+            std::path::PathBuf::from(extra)
+        } else if let Some(ref home) = home {
+            home.join(extra)
+        } else {
+            continue;
+        };
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| inherited.unwrap_or_default())
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_path_keeps_inherited_dirs_first_and_appends_user_dirs() {
+        let path = build_search_path(
+            Some("/usr/bin:/bin".into()),
+            Some(std::path::PathBuf::from("/Users/me")),
+        );
+        let dirs: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs[0], std::path::PathBuf::from("/usr/bin"));
+        assert_eq!(dirs[1], std::path::PathBuf::from("/bin"));
+        assert!(dirs.contains(&std::path::PathBuf::from("/Users/me/.local/bin")));
+        assert!(dirs.contains(&std::path::PathBuf::from("/Users/me/.volta/bin")));
+        assert!(dirs.contains(&std::path::PathBuf::from("/opt/homebrew/bin")));
+    }
+
+    #[test]
+    fn search_path_does_not_duplicate_existing_dirs() {
+        let path = build_search_path(
+            Some("/opt/homebrew/bin:/usr/bin".into()),
+            Some(std::path::PathBuf::from("/Users/me")),
+        );
+        let count = std::env::split_paths(&path)
+            .filter(|d| d == &std::path::PathBuf::from("/opt/homebrew/bin"))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn search_path_without_home_still_adds_system_dirs() {
+        let path = build_search_path(Some("/usr/bin".into()), None);
+        let dirs: Vec<_> = std::env::split_paths(&path).collect();
+        assert!(dirs.contains(&std::path::PathBuf::from("/usr/local/bin")));
+        assert!(!dirs.iter().any(|d| d.ends_with(".local/bin")));
+    }
+
+    #[test]
+    fn normalize_markdown_trims_and_adds_trailing_newline() {
+        assert_eq!(
+            normalize_markdown("  # Title\n\nBody  ", "pi").unwrap(),
+            "# Title\n\nBody\n"
+        );
+    }
+
+    #[test]
+    fn normalize_markdown_unwraps_code_fence() {
+        assert_eq!(
+            normalize_markdown("```markdown\n# Title\n```", "pi").unwrap(),
+            "# Title\n"
+        );
+    }
+
+    #[test]
+    fn normalize_markdown_rejects_blank() {
+        assert!(normalize_markdown("  \n ", "pi").is_err());
+        assert!(normalize_markdown("```\n```", "pi").is_err());
+    }
 
     #[test]
     fn enrichment_response_serde_roundtrip() {
