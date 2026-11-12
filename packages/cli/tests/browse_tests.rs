@@ -1,5 +1,6 @@
 //! Integration tests for `agentmark list`, `agentmark show`, `agentmark search`,
-//! `agentmark tag`, `agentmark collections`, and `agentmark open`.
+//! `agentmark tag`, `agentmark collections`, `agentmark open`, and
+//! `agentmark delete`.
 //!
 //! Seeds DB rows and bundles directly through library APIs, then
 //! executes the CLI with `assert_cmd` against a temp HOME.
@@ -1064,4 +1065,89 @@ fn open_missing_opener_reports_error() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("failed to open"));
+}
+
+// ── Delete tests ────────────────────────────────────────────────────
+
+fn bundle_dir_for(env: &TestEnv, bm: &Bookmark) -> PathBuf {
+    Bundle::find(&env.storage, &bm.saved_at, &bm.id)
+        .unwrap()
+        .path()
+        .to_path_buf()
+}
+
+fn row_exists(env: &TestEnv, id: &str) -> bool {
+    let conn = db::open_and_migrate(&env.db_path()).unwrap();
+    BookmarkRepository::new(&conn)
+        .get_by_id(id)
+        .unwrap()
+        .is_some()
+}
+
+#[test]
+fn delete_yes_removes_row_and_bundle() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_01DEL", "https://a.com/post", "Doomed Post", 1);
+    env.seed_bookmark(&bm, "body", None);
+    let dir = bundle_dir_for(&env, &bm);
+
+    let output = env
+        .cmd()
+        .args(["delete", "am_01DEL", "--yes"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "stdout: {stdout}");
+    assert!(stdout.contains("Doomed Post"), "stdout: {stdout}");
+    assert!(stdout.contains("https://a.com/post"), "stdout: {stdout}");
+    assert!(stdout.contains("Deleted am_01DEL"), "stdout: {stdout}");
+    assert!(!dir.exists(), "bundle directory should be gone");
+    assert!(!row_exists(&env, "am_01DEL"));
+
+    // FTS and URL alias rows go with the bookmark (via triggers).
+    let conn = db::open_and_migrate(&env.db_path()).unwrap();
+    let repo = BookmarkRepository::new(&conn);
+    assert!(repo.search("Doomed", 10, None).unwrap().is_empty());
+    assert!(repo
+        .saved_urls(&["https://a.com/post".to_string()])
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn delete_unknown_id_fails() {
+    let env = TestEnv::new();
+    db::open_and_migrate(&env.db_path()).unwrap();
+
+    let output = env
+        .cmd()
+        .args(["delete", "am_NOPE", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("bookmark not found: am_NOPE"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn delete_declined_keeps_everything() {
+    let env = TestEnv::new();
+    let bm = make_bookmark("am_02KEEP", "https://b.com", "Kept Post", 2);
+    env.seed_bookmark(&bm, "body", None);
+    let dir = bundle_dir_for(&env, &bm);
+
+    let output = env
+        .cmd()
+        .args(["delete", "am_02KEEP"])
+        .write_stdin("n\n")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "stdout: {stdout}");
+    assert!(stdout.contains("Aborted."), "stdout: {stdout}");
+    assert!(dir.exists());
+    assert!(row_exists(&env, "am_02KEEP"));
 }

@@ -9,10 +9,12 @@ use std::path::Path;
 
 use tracing::{debug, error, info, warn};
 
+use crate::canonical;
 use crate::commands::bookmark_detail;
+use crate::commands::post_process;
 use crate::commands::save::{self, DedupResult, SaveRequest};
 use crate::config;
-use crate::db::BookmarkRepository;
+use crate::db::{self, BookmarkRepository};
 use crate::enrich::ProviderFactory;
 use crate::models::{BookmarkState, CaptureSource};
 use crate::native::messages::{BookmarkChanges, BookmarkSummary, IncomingMessage, OutgoingMessage};
@@ -132,14 +134,16 @@ fn dispatch(
             note,
             selected_text: _selected_text,
             action,
+            page_html,
         } => {
-            let req = build_save_request(url, title, tags, collection, note, action);
+            let req = build_save_request(url, title, tags, collection, note, action, page_html);
             handle_save(req, home, provider_factory)
         }
         IncomingMessage::ListCollections => handle_list_collections(home),
         IncomingMessage::List { limit, state } => handle_list(home, limit, state),
         IncomingMessage::Show { id } => handle_show(home, &id),
         IncomingMessage::Update { id, changes } => handle_update(home, &id, &changes),
+        IncomingMessage::LookupUrls { urls } => handle_lookup_urls(home, &urls),
     }
 }
 
@@ -160,6 +164,7 @@ fn build_save_request(
     collection: Option<String>,
     note: Option<String>,
     action: Option<String>,
+    page_html: Option<String>,
 ) -> SaveRequest {
     SaveRequest {
         url,
@@ -169,7 +174,10 @@ fn build_save_request(
         action,
         capture_source: CaptureSource::ChromeExtension,
         provided_title: title,
+        page_html,
         no_enrich: false,
+        // Never make the browser wait on a model; the work runs in the background.
+        defer_enrichment: true,
     }
 }
 
@@ -187,6 +195,12 @@ fn handle_save(
                 DedupResult::ContentChanged => "content_updated",
             };
             info!("save succeeded: id={} status={status}", outcome.id);
+            if let Some(work) = outcome.post_process {
+                match post_process::spawn_detached(&outcome.id, work) {
+                    Ok(()) => info!("post-processing started: id={} {work:?}", outcome.id),
+                    Err(e) => warn!("failed to start post-processing for {}: {e}", outcome.id),
+                }
+            }
             OutgoingMessage::SaveResult {
                 id: outcome.id,
                 path: outcome.bundle_path.display().to_string(),
@@ -203,10 +217,14 @@ fn handle_save(
 /// Verify config exists and open the index DB. Returns an error message on failure.
 fn open_repository(home: &Path) -> Result<rusqlite::Connection, String> {
     // Verify init by loading config — this surfaces "run `agentmark init` first"
+    // and stops us creating a database under an uninitialized home.
     config::Config::load(home).map_err(|e| format!("not initialized: {e}"))?;
 
+    // Migrate here too: the extension can talk to a newer binary before any
+    // CLI command has upgraded the index, and the busy timeout matters because
+    // background post-processing writes concurrently.
     let db_path = config::index_db_path(home);
-    rusqlite::Connection::open(&db_path).map_err(|e| format!("failed to open database: {e}"))
+    db::open_and_migrate(&db_path).map_err(|e| format!("failed to open database: {e}"))
 }
 
 fn handle_list_collections(home: &Path) -> OutgoingMessage {
@@ -278,6 +296,41 @@ fn handle_update(home: &Path, id: &str, changes: &BookmarkChanges) -> OutgoingMe
         },
         Err(e) => OutgoingMessage::error(e.to_string()),
     }
+}
+
+/// Maximum number of URLs considered in one lookup; extras are ignored.
+const MAX_LOOKUP_URLS: usize = 200;
+
+/// Report which request URLs are already bookmarked, echoing them verbatim so
+/// the extension can match its own strings without knowing canonicalization.
+fn handle_lookup_urls(home: &Path, urls: &[String]) -> OutgoingMessage {
+    let conn = match open_repository(home) {
+        Ok(c) => c,
+        Err(e) => return OutgoingMessage::error(e),
+    };
+    let repo = BookmarkRepository::new(&conn);
+
+    // Unparseable URLs cannot be bookmarked, so they just drop out.
+    let considered = &urls[..urls.len().min(MAX_LOOKUP_URLS)];
+    let pairs: Vec<(&String, String)> = considered
+        .iter()
+        .filter_map(|raw| canonical::canonicalize(raw).ok().map(|c| (raw, c)))
+        .collect();
+    let canonicals: Vec<String> = pairs.iter().map(|(_, c)| c.clone()).collect();
+
+    let found = match repo.saved_urls(&canonicals) {
+        Ok(found) => found,
+        Err(e) => return OutgoingMessage::error(format!("failed to look up URLs: {e}")),
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let saved: Vec<String> = pairs
+        .into_iter()
+        .filter(|(raw, c)| found.contains(c) && seen.insert(raw.as_str()))
+        .map(|(raw, _)| raw.clone())
+        .collect();
+    debug!(requested = urls.len(), saved = saved.len(), "lookup_urls");
+    OutgoingMessage::LookupUrlsResult { saved }
 }
 
 // ── Response writer ─────────────────────────────────────────────────
@@ -560,6 +613,7 @@ mod tests {
                 collection: None,
                 note: None,
                 selected_text: None,
+                page_html: None,
                 action: None,
             },
             &home,
@@ -722,6 +776,129 @@ mod tests {
             json!({"type": "update", "id": "am_123", "changes": {"state": "processed"}}),
             json!({"type": "status"}),
         ]);
+        let (stdout, result) = run_host_status_only(&stdin);
+        assert!(result.is_ok());
+
+        let responses = decode_responses(&stdout);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["type"], "error");
+        assert_eq!(responses[1]["type"], "status_result");
+    }
+
+    // ── LookupUrls tests ───────────────────────────────────────────
+
+    /// A temp home with config + migrated DB holding one bookmark at `canonical_url`.
+    fn home_with_bookmark(canonical_url: &str) -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_dir = tmp.path().join(".agentmark");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let storage = tmp.path().join("bookmarks");
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            format!(
+                "default_agent = \"claude\"\nstorage_path = \"{}\"\n\n[enrichment]\nenabled = false\n",
+                storage.display()
+            ),
+        )
+        .unwrap();
+        let conn = db::open_and_migrate(&config::index_db_path(tmp.path())).unwrap();
+        let mut bm = crate::models::Bookmark::new(canonical_url, "Saved");
+        bm.canonical_url = canonical_url.to_string();
+        BookmarkRepository::new(&conn).insert(&bm).unwrap();
+        tmp
+    }
+
+    fn no_factory() -> &'static ProviderFactory {
+        &|_, _| {
+            Err(crate::agent::AgentError::InvalidAgent {
+                value: "test".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn dispatch_lookup_urls_with_no_config_returns_error() {
+        let home = std::path::PathBuf::from("/nonexistent");
+        let response = dispatch(
+            IncomingMessage::LookupUrls {
+                urls: vec!["https://example.com".to_string()],
+            },
+            &home,
+            no_factory(),
+        );
+        match response {
+            OutgoingMessage::Error { message } => {
+                assert!(message.contains("not initialized"), "{message}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_lookup_urls_returns_verbatim_saved_in_order_without_duplicates() {
+        let tmp = home_with_bookmark("https://example.com/a");
+        let urls: Vec<String> = [
+            "https://www.example.com/a/?utm_source=x",
+            "https://example.com/unsaved",
+            "not a url",
+            "https://example.com/a",
+            "https://www.example.com/a/?utm_source=x",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let response = dispatch(
+            IncomingMessage::LookupUrls { urls },
+            tmp.path(),
+            no_factory(),
+        );
+        assert_eq!(
+            response,
+            OutgoingMessage::LookupUrlsResult {
+                saved: vec![
+                    "https://www.example.com/a/?utm_source=x".to_string(),
+                    "https://example.com/a".to_string(),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn dispatch_lookup_urls_ignores_urls_past_the_limit() {
+        let tmp = home_with_bookmark("https://example.com/a");
+        let mut urls: Vec<String> = (0..MAX_LOOKUP_URLS)
+            .map(|i| format!("https://example.com/unsaved/{i}"))
+            .collect();
+        urls.push("https://example.com/a".to_string());
+        let response = dispatch(
+            IncomingMessage::LookupUrls { urls },
+            tmp.path(),
+            no_factory(),
+        );
+        assert_eq!(
+            response,
+            OutgoingMessage::LookupUrlsResult { saved: Vec::new() }
+        );
+    }
+
+    #[test]
+    fn dispatch_lookup_urls_empty_request_returns_empty() {
+        let tmp = home_with_bookmark("https://example.com/a");
+        let response = dispatch(
+            IncomingMessage::LookupUrls { urls: Vec::new() },
+            tmp.path(),
+            no_factory(),
+        );
+        assert_eq!(
+            response,
+            OutgoingMessage::LookupUrlsResult { saved: Vec::new() }
+        );
+    }
+
+    #[test]
+    fn lookup_urls_missing_field_returns_error_and_loop_continues() {
+        let stdin = frame_messages(&[json!({"type": "lookup_urls"}), json!({"type": "status"})]);
         let (stdout, result) = run_host_status_only(&stdin);
         assert!(result.is_ok());
 

@@ -165,6 +165,25 @@ impl Bundle {
         writer::rewrite_source_html(&self.path, html)
     }
 
+    /// Write or remove `fetched.html`: the page as the CLI fetched it, kept
+    /// next to a browser snapshot in `source.html` as supplementary content.
+    pub fn update_fetched_html(&self, html: Option<&str>) -> Result<(), BundleError> {
+        let path = self.path.join("fetched.html");
+        let result = match html {
+            Some(html) => std::fs::write(&path, html),
+            None => match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            },
+        };
+        result.map_err(|source| BundleError::Io { path, source })
+    }
+
+    /// Read `fetched.html` if the bundle has one.
+    pub fn read_fetched_html(&self) -> Option<String> {
+        std::fs::read_to_string(self.path.join("fetched.html")).ok()
+    }
+
     /// Find an existing bundle by storage root, saved_at date, and bookmark ID.
     ///
     /// This lookup is stable even if the bookmark title changes, because it
@@ -183,6 +202,14 @@ impl Bundle {
     /// Returns `BundleError::Io` if the file does not exist.
     pub fn read_article_md(&self) -> Result<String, BundleError> {
         let path = self.path.join("article.md");
+        std::fs::read_to_string(&path).map_err(|source| BundleError::Io { path, source })
+    }
+
+    /// Read the captured page HTML from `source.html`.
+    ///
+    /// Returns `BundleError::Io` if the file does not exist.
+    pub fn read_source_html(&self) -> Result<String, BundleError> {
+        let path = self.path.join("source.html");
         std::fs::read_to_string(&path).map_err(|source| BundleError::Io { path, source })
     }
 

@@ -1014,3 +1014,415 @@ fn list_with_invalid_state_returns_error() {
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["type"], "error");
 }
+
+// ── Fetch-failure fallback (login walls / bot blocking) ─────────────
+
+/// LinkedIn answers HTTP 999 to non-browser clients. The extension sends a
+/// snapshot of the live tab, which must be used instead of failing the save.
+#[test]
+fn save_uses_page_html_snapshot_when_fetch_is_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server.mock("GET", "/in/someone").with_status(999).create();
+
+    let url = format!("{}/in/someone", server.url());
+    let stdin = frame(&json!({
+        "type": "save",
+        "url": url,
+        "title": "Tab Title",
+        "page_html": sample_html()
+    }));
+
+    let output = agentmark_cmd(&home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["type"], "save_result", "{:?}", responses[0]);
+    assert_eq!(responses[0]["status"], "created");
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    let article = std::fs::read_to_string(bundle_dirs[0].join("article.md")).unwrap();
+    assert!(article.contains("substantial test article"), "{article}");
+    let source = std::fs::read_to_string(bundle_dirs[0].join("source.html")).unwrap();
+    assert_eq!(source, sample_html());
+
+    let conn = rusqlite::Connection::open(home.join(".agentmark/index.db")).unwrap();
+    let (title, content_status): (String, String) = conn
+        .query_row(
+            "SELECT title, content_status FROM bookmarks LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(title, "Test Page Title");
+    assert_eq!(content_status, "extracted");
+}
+
+#[test]
+fn save_without_snapshot_still_saves_when_fetch_is_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server.mock("GET", "/in/someone").with_status(999).create();
+
+    let url = format!("{}/in/someone", server.url());
+    let response = save_bookmark(&home, &url, "Someone | LinkedIn", &[]);
+    assert_eq!(response["status"], "created");
+
+    let conn = rusqlite::Connection::open(home.join(".agentmark/index.db")).unwrap();
+    let (title, content_status): (String, String) = conn
+        .query_row(
+            "SELECT title, content_status FROM bookmarks LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(title, "Someone | LinkedIn");
+    assert_eq!(content_status, "failed");
+}
+
+#[test]
+fn blocked_resave_without_snapshot_keeps_existing_content() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let mut server = mockito::Server::new();
+    let ok = server
+        .mock("GET", "/article")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+    let url = format!("{}/article", server.url());
+    let first = save_bookmark(&home, &url, "Test", &[]);
+    assert_eq!(first["status"], "created");
+
+    ok.remove();
+    let _blocked = server.mock("GET", "/article").with_status(999).create();
+    let second = save_bookmark(&home, &url, "Test", &["later"]);
+    assert_eq!(second["status"], "updated");
+    assert_eq!(second["id"], first["id"]);
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    let article = std::fs::read_to_string(bundle_dirs[0].join("article.md")).unwrap();
+    assert!(article.contains("substantial test article"), "{article}");
+}
+
+// ── Snapshot-preferred sites ────────────────────────────────────────
+
+/// Like `setup_home`, with the mock server registered as a snapshot-preferred site.
+fn setup_home_with_snapshot_site(
+    tmp: &TempDir,
+    storage_path: &Path,
+    rule: &str,
+) -> std::path::PathBuf {
+    let home = setup_home(tmp, storage_path);
+    let config = format!(
+        "default_agent = \"claude\"\nstorage_path = \"{}\"\nsnapshot_sites = [\"{rule}\"]\n\n[enrichment]\nenabled = false\n",
+        storage_path.display()
+    );
+    std::fs::write(home.join(".agentmark/config.toml"), config).unwrap();
+    home
+}
+
+fn logged_in_snapshot() -> &'static str {
+    r#"<!DOCTYPE html><html><head><title>Post | Feed</title></head><body><main>
+<p>The logged-in view of the post, with every comment the reader expanded on the page.</p>
+<p>A second paragraph so the snapshot has enough readable text to extract.</p>
+</main></body></html>"#
+}
+
+fn public_page() -> &'static str {
+    r#"<!DOCTYPE html><html><head><title>Public Post Title</title>
+<link rel="canonical" href="https://example.com/posts/stable-permalink">
+</head><body><p>Sign in to see more.</p><article><p>The public view of the post.</p></article></body></html>"#
+}
+
+fn save_with_snapshot(home: &Path, url: &str) -> serde_json::Value {
+    let stdin = frame(&json!({
+        "type": "save",
+        "url": url,
+        "title": "Tab Title",
+        "page_html": logged_in_snapshot()
+    }));
+    let output = agentmark_cmd(home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let responses = decode_responses(&output);
+    assert_eq!(responses[0]["type"], "save_result", "{:?}", responses[0]);
+    responses[0].clone()
+}
+
+/// For a listed site the browser snapshot is the content even though the
+/// fetch succeeds; the fetched page is kept beside it and supplies metadata.
+#[test]
+fn listed_site_saves_snapshot_and_keeps_fetched_page_as_supplement() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/posts/");
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/posts/a-post")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(public_page())
+        .create();
+
+    save_with_snapshot(&home, &format!("{}/posts/a-post", server.url()));
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(bundle_dirs[0].join("source.html")).unwrap(),
+        logged_in_snapshot()
+    );
+    assert_eq!(
+        std::fs::read_to_string(bundle_dirs[0].join("fetched.html")).unwrap(),
+        public_page()
+    );
+    let article = std::fs::read_to_string(bundle_dirs[0].join("article.md")).unwrap();
+    assert!(article.contains("logged-in view"), "{article}");
+    assert!(!article.contains("Sign in"), "{article}");
+
+    let conn = rusqlite::Connection::open(home.join(".agentmark/index.db")).unwrap();
+    let (title, canonical): (String, String) = conn
+        .query_row(
+            "SELECT title, canonical_url FROM bookmarks LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(title, "Public Post Title");
+    assert!(
+        canonical.contains("example.com/posts/stable-permalink"),
+        "{canonical}"
+    );
+}
+
+#[test]
+fn listed_site_saves_snapshot_alone_when_fetch_is_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/in/");
+
+    let mut server = mockito::Server::new();
+    let _mock = server.mock("GET", "/in/someone").with_status(999).create();
+
+    save_with_snapshot(&home, &format!("{}/in/someone", server.url()));
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(bundle_dirs[0].join("source.html")).unwrap(),
+        logged_in_snapshot()
+    );
+    assert!(!bundle_dirs[0].join("fetched.html").exists());
+}
+
+/// Sites that are not listed keep the fetched page; the snapshot is only a fallback.
+#[test]
+fn unlisted_site_ignores_snapshot_when_fetch_succeeds() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/posts/");
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/article")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+
+    save_with_snapshot(&home, &format!("{}/article", server.url()));
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(
+        std::fs::read_to_string(bundle_dirs[0].join("source.html")).unwrap(),
+        sample_html()
+    );
+    assert!(!bundle_dirs[0].join("fetched.html").exists());
+}
+
+/// A login wall answers the fetch with HTTP 200 on a different URL. Its title
+/// and canonical URL must not leak into the bookmark, or every walled page
+/// would be named after, and deduplicated into, the login page.
+#[test]
+fn listed_site_ignores_fetch_redirected_to_login_page() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/company/");
+
+    let mut server = mockito::Server::new();
+    let _redirect = server
+        .mock("GET", "/company/acme/about")
+        .with_status(302)
+        .with_header("location", "/login")
+        .create();
+    let _login = server
+        .mock("GET", "/login")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(
+            r#"<html><head><title>Login, Sign in</title>
+<link rel="canonical" href="https://example.com/login"></head><body><p>Sign in</p></body></html>"#,
+        )
+        .create();
+
+    save_with_snapshot(&home, &format!("{}/company/acme/about", server.url()));
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    assert!(!bundle_dirs[0].join("fetched.html").exists());
+
+    let conn = rusqlite::Connection::open(home.join(".agentmark/index.db")).unwrap();
+    let (title, canonical): (String, String) = conn
+        .query_row(
+            "SELECT title, canonical_url FROM bookmarks LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(title, "Post | Feed");
+    assert!(canonical.contains("/company/acme/about"), "{canonical}");
+    assert!(!canonical.contains("login"), "{canonical}");
+}
+
+/// Re-saving a snapshot page is "unchanged" only if the whole page is the same,
+/// not merely the region generic extraction happens to pick as the article.
+#[test]
+fn snapshot_resave_detects_changes_outside_the_extracted_article() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/in/");
+
+    let mut server = mockito::Server::new();
+    let _mock = server.mock("GET", "/in/someone").with_status(999).create();
+    let url = format!("{}/in/someone", server.url());
+
+    let save = |html: &str| -> serde_json::Value {
+        let stdin = frame(&json!({ "type": "save", "url": url, "title": "T", "page_html": html }));
+        let output = agentmark_cmd(&home)
+            .arg("native-host")
+            .write_stdin(stdin)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        decode_responses(&output)[0].clone()
+    };
+    let page = |sidebar: &str| {
+        format!(
+            r#"<html><head><title>Someone</title></head><body><article>
+<p>This is the main article region with enough readable text for extraction to choose it.</p>
+<p>It has a second paragraph so that the extractor is confident about the selection.</p>
+</article><aside><ul><li>{sidebar}</li></ul></aside></body></html>"#
+        )
+    };
+
+    assert_eq!(save(&page("Experience: Acme"))["status"], "created");
+    assert_eq!(save(&page("Experience: Acme"))["status"], "updated");
+    assert_eq!(
+        save(&page("Experience: Globex"))["status"],
+        "content_updated"
+    );
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    let source = std::fs::read_to_string(bundle_dirs[0].join("source.html")).unwrap();
+    assert!(source.contains("Globex"), "{source}");
+}
+
+// ── Lookup URLs ─────────────────────────────────────────────────────
+
+#[test]
+fn lookup_urls_returns_verbatim_saved_urls() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    let conn = agentmark::db::open_and_migrate(&home.join(".agentmark/index.db")).unwrap();
+    let mut bm = agentmark::models::Bookmark::new("https://example.com/post", "Saved Post");
+    bm.canonical_url = "https://example.com/post".to_string();
+    agentmark::db::BookmarkRepository::new(&conn)
+        .insert(&bm)
+        .unwrap();
+    drop(conn);
+
+    let tracked = "https://www.example.com/post?utm_source=x";
+    let stdin = frame(&json!({
+        "type": "lookup_urls",
+        "urls": [
+            "https://example.com/unsaved",
+            tracked,
+            "not a url",
+            "https://example.com/post",
+        ]
+    }));
+    let output = agentmark_cmd(&home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        responses[0],
+        json!({
+            "type": "lookup_urls_result",
+            "saved": [tracked, "https://example.com/post"]
+        })
+    );
+}
+
+#[test]
+fn lookup_urls_migrates_an_unmigrated_index() {
+    // The host may run before any CLI command has created or upgraded the
+    // schema; handlers must migrate rather than fail on a missing table.
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+    std::fs::write(home.join(".agentmark/index.db"), b"").unwrap();
+
+    let stdin = frame(&json!({"type": "lookup_urls", "urls": ["https://example.com/x"]}));
+    let output = agentmark_cmd(&home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let responses = decode_responses(&output);
+    assert_eq!(
+        responses,
+        vec![json!({"type": "lookup_urls_result", "saved": []})]
+    );
+}

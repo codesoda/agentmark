@@ -263,6 +263,40 @@ describe("NativeMessagingClient", () => {
     });
   });
 
+  describe("page_html size guard", () => {
+    function captureSave(): { posted: () => { page_html?: string } } {
+      let postedMessage: unknown;
+      mockPort.onMessage.addListener.mockImplementation((cb: (msg: unknown) => void) => {
+        mockPort.postMessage.mockImplementation((msg: unknown) => {
+          postedMessage = msg;
+          cb({ type: "save_result", id: "1", path: "/a", status: "created" });
+        });
+      });
+      mockPort.onDisconnect.addListener.mockImplementation(() => {});
+      return { posted: () => postedMessage as { page_html?: string } };
+    }
+
+    it("passes a normal snapshot through unchanged", async () => {
+      const capture = captureSave();
+      await client.sendRequest({
+        type: "save",
+        url: "https://example.com",
+        page_html: "<html></html>",
+      });
+      expect(capture.posted().page_html).toBe("<html></html>");
+    });
+
+    it("drops a snapshot too large for the native host frame", async () => {
+      const capture = captureSave();
+      await client.sendRequest({
+        type: "save",
+        url: "https://example.com",
+        page_html: "\u20ac".repeat(5_000_000), // 3 UTF-8 bytes each = 15 MB
+      });
+      expect(capture.posted().page_html).toBeUndefined();
+    });
+  });
+
   describe("unsent queue", () => {
     it("accepts requests up to the queue limit", () => {
       for (let i = 0; i < 10; i++) {

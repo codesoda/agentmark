@@ -17,6 +17,8 @@ export interface SaveRequest {
   note?: string;
   selected_text?: string;
   action?: string;
+  /** HTML snapshot of the live tab; the CLI uses it when it cannot fetch the URL itself. */
+  page_html?: string;
 }
 
 export interface StatusRequest {
@@ -54,7 +56,13 @@ export interface UpdateRequest {
   changes: BookmarkChanges;
 }
 
-export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest | ShowRequest | UpdateRequest;
+/** Which of these URLs are already bookmarked. The host considers at most 200 per request. */
+export interface LookupUrlsRequest {
+  type: "lookup_urls";
+  urls: string[];
+}
+
+export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest | ShowRequest | UpdateRequest | LookupUrlsRequest;
 
 // --- Incoming responses (Native Host → Extension) ---
 
@@ -115,12 +123,18 @@ export interface UpdateResultResponse {
   bookmark: BookmarkDetail;
 }
 
+export interface LookupUrlsResultResponse {
+  type: "lookup_urls_result";
+  /** The subset of the requested URL strings, verbatim, that are already bookmarked. */
+  saved: string[];
+}
+
 export interface ErrorResponse {
   type: "error";
   message: string;
 }
 
-export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ShowResultResponse | UpdateResultResponse | ErrorResponse;
+export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ShowResultResponse | UpdateResultResponse | LookupUrlsResultResponse | ErrorResponse;
 
 // --- Connection status ---
 
@@ -128,7 +142,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 // --- Runtime parsing helpers ---
 
-const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "show_result", "update_result", "error"]);
+const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "show_result", "update_result", "lookup_urls_result", "error"]);
 
 function parseBookmarkDetail(raw: unknown, responseType: string): BookmarkDetail {
   if (raw === null || raw === undefined || typeof raw !== "object") {
@@ -248,6 +262,15 @@ export function parseNativeResponse(raw: unknown): NativeResponse {
       const bookmark = parseBookmarkDetail(obj.bookmark, obj.type as string);
       return { type: obj.type as "show_result" | "update_result", bookmark } as NativeResponse;
     }
+    case "lookup_urls_result": {
+      if (!Array.isArray(obj.saved)) {
+        throw new Error("lookup_urls_result missing 'saved' array");
+      }
+      if (!(obj.saved as unknown[]).every((u) => typeof u === "string")) {
+        throw new Error("lookup_urls_result has non-string saved entries");
+      }
+      return { type: "lookup_urls_result", saved: obj.saved as string[] };
+    }
     case "error": {
       if (typeof obj.message !== "string") {
         throw new Error("error response missing 'message' field");
@@ -274,6 +297,37 @@ export interface RuntimeSaveMessage {
   note?: string;
   selected_text?: string;
   action?: string;
+  /** HTML snapshot of the live tab; the CLI uses it when it cannot fetch the URL itself. */
+  page_html?: string;
+}
+
+/** A save prepared outside the popup (e.g. by an in-page button) for the popup to carry out. */
+export interface PendingSave {
+  url: string;
+  title?: string;
+  page_html?: string;
+}
+
+/**
+ * Ask the service worker to open the popup for this save, so the user gets the
+ * usual saving → saved view with tags and collections. If the popup cannot be
+ * opened the service worker saves directly instead.
+ */
+export interface RuntimeOpenSavePopupMessage extends PendingSave {
+  type: "open_save_popup";
+}
+
+/** Sent by the popup on open: hand over the pending save, if there is one. */
+export interface RuntimeTakePendingSaveMessage {
+  type: "take_pending_save";
+}
+
+/** Sent by the service worker to the tab whose in-page button started a save. */
+export interface SaveResultNotice {
+  type: "agentmark:save-result";
+  url: string;
+  success: boolean;
+  error?: string;
 }
 
 export interface RuntimeStatusMessage {
@@ -301,7 +355,13 @@ export interface RuntimeUpdateMessage {
   changes: BookmarkChanges;
 }
 
-export type RuntimeMessage = RuntimeSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage | RuntimeShowMessage | RuntimeUpdateMessage;
+/** Sent by in-page buttons: which of these post URLs are already bookmarked. */
+export interface RuntimeLookupUrlsMessage {
+  type: "lookup_urls";
+  urls: string[];
+}
+
+export type RuntimeMessage = RuntimeSaveMessage | RuntimeOpenSavePopupMessage | RuntimeTakePendingSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage | RuntimeShowMessage | RuntimeUpdateMessage | RuntimeLookupUrlsMessage;
 
 export interface RuntimeSuccessResponse {
   success: true;

@@ -23,6 +23,7 @@ fn top_level_help_lists_all_subcommands() {
         "collections",
         "open",
         "reprocess",
+        "delete",
         "native-host",
     ] {
         assert!(
@@ -351,6 +352,36 @@ fn reprocess_rejects_id_and_all() {
     assert!(Cli::try_parse_from(["agentmark", "reprocess", "abc123", "--all"]).is_err());
 }
 
+// ── Delete command ──────────────────────────────────────────────────
+
+#[test]
+fn delete_requires_id() {
+    assert!(Cli::try_parse_from(["agentmark", "delete"]).is_err());
+}
+
+#[test]
+fn delete_parses_id() {
+    let cli = Cli::try_parse_from(["agentmark", "delete", "abc123"]).unwrap();
+    match cli.command {
+        cli::Commands::Delete(args) => {
+            assert_eq!(args.id, "abc123");
+            assert!(!args.yes);
+        }
+        _ => panic!("expected Delete"),
+    }
+}
+
+#[test]
+fn delete_parses_yes_long_and_short() {
+    for flag in ["--yes", "-y"] {
+        let cli = Cli::try_parse_from(["agentmark", "delete", "abc123", flag]).unwrap();
+        match cli.command {
+            cli::Commands::Delete(args) => assert!(args.yes, "{flag}"),
+            _ => panic!("expected Delete"),
+        }
+    }
+}
+
 // ── Collections and NativeHost (no args) ────────────────────────────
 
 #[test]
@@ -397,4 +428,14 @@ fn get_subcommand_help(name: &str) -> String {
     let mut buf = Vec::new();
     sub.write_long_help(&mut buf).unwrap();
     String::from_utf8(buf).unwrap()
+}
+
+/// The CLI embeds the extension, so the two ship together under one version.
+#[test]
+fn cli_and_extension_versions_match() {
+    let manifest_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../extension/manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
 }

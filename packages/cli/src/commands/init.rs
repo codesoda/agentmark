@@ -52,6 +52,7 @@ pub fn run_init_with_io(
         storage_path: storage_path.clone(),
         system_prompt: None,
         log_level: None,
+        snapshot_sites: Vec::new(),
         enrichment: EnrichmentConfig { enabled: true },
     };
 
@@ -110,7 +111,7 @@ fn prompt_yes_no(
 }
 
 fn prompt_agent(reader: &mut dyn BufRead, writer: &mut dyn Write) -> Result<String, ConfigError> {
-    write!(writer, "Default agent [claude/codex] (claude): ").ok();
+    write!(writer, "Default agent [claude/codex/pi] (claude): ").ok();
     writer.flush().ok();
     let line = read_line(reader)?;
     let trimmed = line.trim();

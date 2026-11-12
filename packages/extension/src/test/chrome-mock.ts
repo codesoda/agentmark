@@ -63,6 +63,15 @@ export function resetChromeMock() {
     },
     tabs: {
       query: vi.fn(),
+      get: vi.fn<(tabId: number) => Promise<Partial<chrome.tabs.Tab>>>(() => Promise.resolve({})),
+      sendMessage: vi.fn(() => Promise.resolve()),
+      onUpdated: createEventTarget(),
+      onActivated: createEventTarget(),
+      onRemoved: createEventTarget(),
+    },
+    action: {
+      openPopup: vi.fn(() => Promise.resolve()),
+      setIcon: vi.fn<(details: chrome.action.TabIconDetails) => Promise<void>>(() => Promise.resolve()),
     },
     notifications: {
       create: vi.fn(

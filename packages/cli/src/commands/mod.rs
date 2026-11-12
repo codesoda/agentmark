@@ -1,11 +1,13 @@
 pub mod add_skill;
 pub mod bookmark_detail;
 pub mod collections;
+pub mod delete;
 pub mod init;
 pub mod install_extension;
 pub mod list;
 pub mod native_host;
 pub mod open;
+pub mod post_process;
 pub mod reprocess;
 pub mod save;
 pub mod search;
@@ -26,8 +28,10 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Collections => collections::run_collections(),
         Commands::Open(args) => open::run_open(args),
         Commands::Reprocess(args) => reprocess::run_reprocess(args),
+        Commands::Delete(args) => delete::run_delete(args),
         Commands::NativeHost => native_host::run_native_host(),
         Commands::InstallExtension(args) => install_extension::run_install_extension(args),
         Commands::AddSkill => add_skill::run_add_skill(),
+        Commands::PostProcess(args) => post_process::run_post_process(args),
     }
 }

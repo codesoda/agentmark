@@ -7,9 +7,13 @@
 //! Public API:
 //! - [`extract_content`] — extract article content from raw HTML.
 //! - [`ExtractionResult`] — article HTML, markdown, and content hash.
+//! - [`simplify_html`] — reduce a page snapshot to a compact skeleton for model input.
 
 mod readability;
+mod simplify;
 mod to_markdown;
+
+pub use simplify::simplify_html;
 
 use sha2::{Digest, Sha256};
 use tracing::{debug, instrument};
@@ -49,6 +53,20 @@ pub fn extract_content(html: &str) -> ExtractionResult {
         article_markdown,
         content_hash,
     }
+}
+
+/// Hash of already-rendered article text, formatted as `sha256:<hex>`.
+pub fn hash_text(text: &str) -> String {
+    compute_hash(text)
+}
+
+/// Hash of a whole page snapshot, formatted as `sha256:<hex>`.
+///
+/// Article extraction keeps one region of a page, so its hash misses changes
+/// anywhere else. For pages saved from a browser snapshot the dedup key must
+/// cover everything visible: this hashes the simplified page instead.
+pub fn snapshot_hash(html: &str) -> String {
+    compute_hash(&simplify_html(html))
 }
 
 /// Compute SHA-256 hash of markdown content, formatted as `sha256:<hex>`.

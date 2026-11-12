@@ -14,3 +14,5 @@ pub mod logging;
 pub mod models;
 pub mod native;
 pub(crate) mod skill;
+pub mod snapshot_rules;
+pub mod youtube;
