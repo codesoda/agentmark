@@ -2,13 +2,15 @@
 
 Agent-first bookmarking for local AI workflows. Save web pages into structured, durable content bundles on your local filesystem — immediately useful to you, Claude Code, Codex, and other local agent tools.
 
+Website: https://agentmark.vercel.app
+
 ## Install
 
 ```sh
 curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash
 ```
 
-This downloads a pre-built binary, installs the Chrome extension, and sets up the agent skill. After install, run the interactive setup:
+This downloads a pre-built binary, installs the Chrome extension, and sets up the agent skill (`agentmark add-skill`). Pre-built binaries exist for macOS on Apple Silicon only; on other platforms, run the installer from a repo checkout or with `--from-source` to build with `cargo`. After install, run the interactive setup:
 
 ```sh
 agentmark init
@@ -18,10 +20,10 @@ agentmark init
 
 When you save a URL, AgentMark:
 
-1. Fetches the page and extracts article content
+1. Fetches the page and extracts article content (YouTube videos are captured through the optional `yt-dlp` CLI: description, chapters, and captions)
 2. Creates a local **bundle** with the article markdown, metadata, and raw HTML
 3. Indexes it in a local SQLite database with full-text search
-4. Optionally enriches it via your local AI agent (Claude or Codex) — generating a summary, suggested tags, and structured metadata
+4. Optionally enriches it via your local AI agent (Claude, Codex, or Pi) — generating a summary, suggested tags, and structured metadata
 
 Everything stays on your machine. No cloud accounts, no sync, no API keys for basic usage.
 
@@ -65,6 +67,13 @@ agentmark reprocess am_01ABC123    # re-extract and re-enrich one bookmark
 agentmark reprocess --all          # reprocess everything
 ```
 
+### Delete
+
+```sh
+agentmark delete am_01ABC123       # asks for confirmation
+agentmark delete am_01ABC123 --yes # delete the bookmark and its files without asking
+```
+
 ## Chrome Extension
 
 The extension provides two interfaces for saving and managing bookmarks directly from Chrome.
@@ -74,6 +83,12 @@ The extension provides two interfaces for saving and managing bookmarks directly
 Press **Cmd+Shift+S** (Mac) or **Ctrl+Shift+S** to save the current page. The popup confirms the save and closes automatically. Click "More options" before saving to add tags, a collection, a note, or an action prompt.
 
 If you select text on the page before saving, it's captured alongside the bookmark.
+
+The extension also sends the page as your browser shows it. AgentMark uses that copy for sites that only render for a logged-in browser (LinkedIn, X, Hacker News discussions, plus any `snapshot_sites` in your config), and whenever its own fetch is blocked (for example, LinkedIn's HTTP 999).
+
+### In-page save buttons
+
+On LinkedIn, X, and Hacker News, each post gets its own save button. The buttons and the toolbar icon show when a page or post is already saved.
 
 ### Side Panel
 
@@ -101,7 +116,7 @@ agentmark install-extension --extension-id YOUR_EXTENSION_ID
 
 ## Agent Integration
 
-AgentMark includes a skill definition that lets AI agents (Claude Code, Codex) save, search, and manage bookmarks on your behalf. The skill is installed automatically to `~/.agents/skills/agentmark/` and symlinked into detected agent roots.
+AgentMark includes a skill definition that lets AI agents (Claude Code, Codex) save, search, and manage bookmarks on your behalf. The installer runs `agentmark add-skill`, which writes the skill to `~/.agentmark/skill/` and symlinks it to `~/.agents/skills/agentmark` (the shared root Codex reads) and, if `~/.claude` exists, to `~/.claude/skills/agentmark`. Run `agentmark add-skill` again at any time to reinstall it.
 
 If an agent tries to use AgentMark and it's not installed, the skill includes bootstrap instructions so the agent can install it via `curl | bash` without user intervention.
 
@@ -130,7 +145,7 @@ storage_path = "/path/to/bookmarks"
 enabled = true
 ```
 
-- `default_agent` — `"claude"` or `"codex"` (used for auto-enrichment)
+- `default_agent` — `"claude"`, `"codex"`, or `"pi"` (used for auto-enrichment)
 - `storage_path` — where bookmark bundles are stored
 - `system_prompt` — optional custom instructions for enrichment
 - `enrichment.enabled` — auto-enrich on save (default: `true`)

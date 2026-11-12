@@ -61,6 +61,7 @@
 - Native list requests use a narrow `BookmarkSummary` DTO (DB-only, no bundle reads) — keep list payloads bounded and filter server-side
 - Native detail requests use a `BookmarkDetail` DTO (DB + bundle summary, no article body) — keep detail payloads bounded
 - Shared form controls (`src/shared/TagInput.tsx`, `src/shared/CollectionSelect.tsx`) are used by both popup and sidepanel — popup re-exports from shared. Do not copy form controls into sidepanel or popup; edit the shared originals
+- CLI-unreachable onboarding is shared: `src/shared/connection.ts` (`classifyConnectionError` maps Chrome's error strings to `not_installed` / `forbidden` / `worker_unreachable` / `host_crashed`; `INSTALL_COMMAND` and `SETUP_GUIDE_URL` live here) and `src/shared/InstallPrompt.tsx` (install command + register command + reload for `not_installed`, register + reload for `forbidden`, reload only for `worker_unreachable`, reload then register for `host_crashed`; Try again re-runs the caller's request). The popup shows it in place of "Save Failed" for all but `host_crashed` and retries the same save target; the side panel shows it in place of the list
 - Test setup (`src/test/chrome-mock.ts`) provides lightweight Chrome API mocks for vitest — use `resetChromeMock()` in `beforeEach` and `createMockPort()` for port lifecycle tests
 
 ## Cross-Agent Skill
@@ -83,6 +84,19 @@
 
 - GitHub Actions workflow: `.github/workflows/ci.yml`
 - Two jobs: `rust` (extension build, fmt, clippy, build, test) and `extension` (npm ci, typecheck, build, lint, test)
+- A `web` job runs the website's checks (pnpm install, typecheck, lint, build)
 - The `rust` job builds the extension first so `include_dir!` embeds real files into the CLI binary
 - CI jobs run on `ubuntu-latest`, so macOS-specific CLI behaviors need an injectable or overrideable seam for tests instead of assuming local macOS binaries exist in CI
 - Extension job auto-skips if `packages/extension/package.json` does not exist
+
+## Website
+
+- `web/` — marketing site, one static page at `/` plus `llms.txt`, robots, sitemap, icons and OpenGraph image. Deploys to Vercel with root directory `web` (canonical `https://agentmark.vercel.app`)
+- Next.js 16 App Router, React 19, TypeScript strict, Tailwind CSS 4, pnpm. No UI kits or animation libraries; icons are inline SVG
+- All commands run from `web/`: `pnpm install`, `pnpm dev`, `pnpm typecheck`, `pnpm lint`, `pnpm build`
+- Self-contained: nothing in `web/` imports from outside it, and nothing outside imports from it. Every route must stay statically renderable (no API routes, no server-only runtime features)
+- Demo slots live in `web/src/components/demos/*-demo.tsx`: default-exported client components with no props, rendered by the page as-is. Replace a demo by editing its file, not the page. Shared frames, the mark, hooks and sample content are in `demos/kit/`; rules and sizes in `demos/README.md`
+- Copy must match the repo: check every claim against the README, `install.sh`, `release.yml`, the CLI and the extension. No invented numbers, quotes, users, logos, pricing or features. Update the site (and `public/llms.txt`) when a user-facing claim changes, such as release platforms
+- Themes follow `prefers-color-scheme` with no toggle. Both themes are hand-written CSS variables in `web/src/app/globals.css`; use the Tailwind token utilities, never raw colours (the mark is the exception)
+- The mark is copied from `packages/extension/icons/` into `web/public/mark/` and `demos/kit/agentmark-mark.tsx`. Do not redraw it; if the icons change, copy them again
+- The extension links to `https://agentmark.vercel.app/#install` (`packages/extension/src/shared/connection.ts`), so keep the `#install` anchor

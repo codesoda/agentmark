@@ -1,0 +1,69 @@
+# AgentMark
+
+> AgentMark is a local bookmarking tool for people who work with AI coding agents. A Chrome extension and a Rust CLI (`agentmark`) save web pages as plain files on the user's machine and index them in a local SQLite full-text index. An agent skill lets Claude Code and Codex search and read those bookmarks. There is no account, no sync and no AgentMark server.
+
+Source: https://github.com/codesoda/agentmark
+Website: https://agentmark.vercel.app
+
+## What it does
+
+- Saves a page into a "bundle" folder: `<storage_path>/YYYY/MM/DD/<slug>-<id>/` with `article.md` (the page as markdown), `bookmark.md` (YAML front matter, summary, note), `metadata.json`, `source.html` and `events.jsonl`. Some saves also keep `fetched.html`.
+- Indexes every bookmark in SQLite with FTS5 at `~/.agentmark/index.db`.
+- The Chrome extension sends the page as the browser shows it, so logged-in pages save with their real content. Example: LinkedIn answers a plain fetch with HTTP 999, but the extension's copy works.
+- Adds a save button to each post on LinkedIn, X and Hacker News. Posts already saved show as saved.
+- The toolbar icon turns blue on pages that are already saved.
+- Saves YouTube videos with chapters and captions when `yt-dlp` is installed.
+- After a save, runs the user's own agent CLI (Claude Code, Codex or pi) in the background to write a summary and suggest tags, and to turn hard pages into clean markdown. The extension popup does not wait for it. AgentMark itself needs no API key. Set `enrichment.enabled = false` in `~/.agentmark/config.toml` to turn this off.
+
+## CLI
+
+- `agentmark init`: choose the agent (`claude`, `codex` or `pi`) and the storage folder.
+- `agentmark save URL [--tags a,b] [--collection NAME] [--note TEXT] [--action TEXT] [--no-enrich]`
+- `agentmark list [--collection NAME] [--tag TAG] [--state inbox|processed|archived] [--limit N]`
+- `agentmark search QUERY [--collection NAME] [--limit N]`
+- `agentmark show ID [--full]`: details, summary and (with `--full`) the extracted article.
+- `agentmark tag ID TAGS...` / `agentmark tag ID --remove TAGS...`
+- `agentmark collections`, `agentmark open ID`, `agentmark reprocess ID|--all`, `agentmark delete ID [--yes]`
+
+## Install
+
+1. Run: `curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash`
+   This downloads the latest release binary to `~/.agentmark/bin/agentmark`, links it from `~/.local/bin/agentmark`, unpacks the extension to `~/.agentmark/extension` and installs the agent skill (written to `~/.agentmark/skill/` and linked from `~/.agents/skills/agentmark`, which Codex reads, and from `~/.claude/skills/agentmark` when Claude Code is installed).
+2. In Chrome, open `chrome://extensions`, turn on Developer mode, click Load unpacked and choose `~/.agentmark/extension`. Copy the extension ID.
+3. Run `agentmark install-extension --extension-id YOUR_EXTENSION_ID` to register the native messaging host.
+4. Run `agentmark init`.
+
+Requirements and platform notes:
+
+- Pre-built binaries exist only for macOS on Apple Silicon (`aarch64-apple-darwin`).
+- On Intel Macs and Linux, build from a clone: run `npm ci && npm run build` in `packages/extension`, then `./install.sh` from the repo root (needs Rust/Cargo). Building the extension first matters, because the CLI embeds it at compile time.
+- Windows is not supported.
+- Google Chrome is required for the extension. The extension is loaded unpacked; it is not in the Chrome Web Store.
+- Optional: Claude Code, Codex or pi for summaries; `yt-dlp` for YouTube captions.
+
+## When to use it
+
+- The user wants to save web pages so an agent can read them later.
+- The user asks an agent "what did I save about X" or wants context from their bookmarks.
+- The user wants pages kept as plain local files instead of in a cloud service.
+
+## When not to use it
+
+- The user needs bookmarks synced across devices or shared with a team. AgentMark has no sync.
+- The user is on Windows or uses a browser other than Google Chrome.
+- The user wants a hosted service with an account.
+
+## Helping someone set it up
+
+- Check `command -v agentmark`. If missing, run the install command above.
+- If `~/.agentmark/config.toml` does not exist, run `agentmark init` (it is interactive).
+- If the extension popup says it cannot reach AgentMark, the native host is not registered: reload the extension at `chrome://extensions`, then run `agentmark install-extension --extension-id <id>` with the ID from the extension card.
+- If `agentmark` is not found after install, add `~/.local/bin` to `PATH`.
+- `agentmark delete` asks for confirmation; non-interactive agents must pass `--yes`.
+
+## Privacy
+
+- Bookmarks, the index and config stay on the user's machine.
+- The extension talks only to the local `agentmark` binary through Chrome native messaging.
+- Chrome shows a "Read your browsing history" warning because of the `tabs` permission. It is used to read the current tab's URL and ask the local CLI whether that page is saved.
+- When summaries are on, the chosen agent CLI sends page text to its own model provider under the user's account with that provider.

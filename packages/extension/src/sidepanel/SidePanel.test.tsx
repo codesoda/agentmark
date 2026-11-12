@@ -98,6 +98,40 @@ describe("SidePanel", () => {
     expect(screen.getByTestId("error-state").textContent).toContain("not initialized");
   });
 
+  it("shows the install prompt instead of the list when the app is not installed", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [],
+      error: "Specified native messaging host not found.",
+    });
+
+    render(<SidePanel />);
+    const prompt = await screen.findByTestId("install-prompt");
+    expect(prompt.getAttribute("data-problem")).toBe("not_installed");
+    expect(screen.getByText("Install the AgentMark app")).toBeDefined();
+    expect(screen.queryByTestId("error-state")).toBeNull();
+  });
+
+  it("reloads the list from Try again", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValueOnce({
+      bookmarks: [],
+      error: "Specified native messaging host not found.",
+    });
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("1")],
+    });
+
+    render(<SidePanel />);
+    await screen.findByTestId("install-prompt");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+
+    expect(sendListBookmarksMessage).toHaveBeenCalledTimes(2);
+    expect(await screen.findByTestId("bookmark-card-1")).toBeDefined();
+    expect(screen.queryByTestId("install-prompt")).toBeNull();
+  });
+
   it("fetches bookmarks with filter when filter tab changes", async () => {
     vi.mocked(sendListBookmarksMessage).mockResolvedValue({
       bookmarks: [makeBookmark("1")],
@@ -236,6 +270,123 @@ describe("SidePanel", () => {
 
     expect(await screen.findByTestId("detail-error")).toBeDefined();
     expect(screen.getByTestId("detail-error").textContent).toContain("bookmark not found");
+  });
+
+  it("shows the install prompt when the detail load cannot reach the app", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_conn")],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      error: "Native host has exited.",
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_conn");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_conn"));
+    });
+
+    const prompt = await screen.findByTestId("install-prompt");
+    expect(prompt.getAttribute("data-problem")).toBe("host_crashed");
+    expect(screen.getByTestId("detail-error").querySelector("p.text-red-600")).toBeNull();
+    expect(screen.getByTestId("back-to-list")).toBeDefined();
+  });
+
+  it("retries the detail load from Try again", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_retry")],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValueOnce({
+      error: "Specified native messaging host not found.",
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_retry"),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_retry");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_retry"));
+    });
+    await screen.findByTestId("install-prompt");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+
+    expect(sendShowBookmarkMessage).toHaveBeenCalledTimes(2);
+    expect(sendShowBookmarkMessage).toHaveBeenLastCalledWith("am_retry");
+    expect(await screen.findByTestId("bookmark-detail")).toBeDefined();
+    expect(screen.queryByTestId("install-prompt")).toBeNull();
+  });
+
+  it("shows the install prompt when an update cannot reach the app, and Try again reloads the detail", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_upconn")],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_upconn", { suggested_tags: ["ai"] }),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+    vi.mocked(sendUpdateBookmarkMessage).mockResolvedValue({
+      error: "Native host disconnected",
+    });
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_upconn");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_upconn"));
+    });
+    await screen.findByTestId("bookmark-detail");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("accept-tag-ai"));
+    });
+
+    const prompt = await screen.findByTestId("install-prompt");
+    expect(prompt.getAttribute("data-problem")).toBe("host_crashed");
+    expect(screen.queryByTestId("mutation-error")).toBeNull();
+    expect(screen.getByTestId("bookmark-detail")).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    });
+
+    expect(sendShowBookmarkMessage).toHaveBeenCalledTimes(2);
+    expect(sendShowBookmarkMessage).toHaveBeenLastCalledWith("am_upconn");
+    expect(await screen.findByTestId("bookmark-detail")).toBeDefined();
+    expect(screen.queryByTestId("install-prompt")).toBeNull();
+  });
+
+  it("keeps the plain error for update failures that are not connection problems", async () => {
+    vi.mocked(sendListBookmarksMessage).mockResolvedValue({
+      bookmarks: [makeBookmark("am_upfail")],
+    });
+    vi.mocked(sendShowBookmarkMessage).mockResolvedValue({
+      bookmark: makeDetail("am_upfail", { suggested_tags: ["ai"] }),
+    });
+    vi.mocked(sendListCollectionsMessage).mockResolvedValue([]);
+    vi.mocked(sendUpdateBookmarkMessage).mockResolvedValue({
+      error: "bundle drift: article.md missing",
+    });
+
+    render(<SidePanel />);
+    await screen.findByTestId("bookmark-card-am_upfail");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bookmark-card-am_upfail"));
+    });
+    await screen.findByTestId("bookmark-detail");
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("accept-tag-ai"));
+    });
+
+    expect((await screen.findByTestId("mutation-error")).textContent).toContain("bundle drift");
+    expect(screen.queryByTestId("install-prompt")).toBeNull();
   });
 
   it("updates bookmark and patches list state", async () => {

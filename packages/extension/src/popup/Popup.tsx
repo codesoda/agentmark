@@ -8,8 +8,9 @@ import {
   querySelectedText,
   queryPageHtml,
   takePendingSave,
-  isConnectionError,
 } from "../shared/runtime";
+import { classifyConnectionError, type ConnectionProblem } from "../shared/connection";
+import InstallPrompt from "../shared/InstallPrompt";
 import type { SaveResultResponse } from "../shared/types";
 import SaveForm, { type SaveFormValues } from "./SaveForm";
 
@@ -22,7 +23,13 @@ type QuickSaveState =
       bookmarkId: string;
       saveStatus: string;
     }
-  | { status: "error"; message: string; isConnectionError: boolean };
+  | { status: "error"; message: string; problem: ConnectionProblem | null };
+
+interface SaveTarget {
+  url: string;
+  title?: string;
+  favIconUrl?: string;
+}
 
 interface FormContext {
   collections: string[];
@@ -37,6 +44,13 @@ type PopupMode =
 
 const AUTO_CLOSE_MS = 2000;
 
+/** Problems the popup shows as setup steps instead of a failed save. */
+function isSetupProblem(
+  problem: ConnectionProblem | null,
+): problem is "not_installed" | "forbidden" | "worker_unreachable" {
+  return problem !== null && problem !== "host_crashed";
+}
+
 export default function Popup() {
   const [quickSaveState, setQuickSaveState] = useState<QuickSaveState>({
     status: "saving",
@@ -45,8 +59,7 @@ export default function Popup() {
 
   const dispatched = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tabUrl = useRef<string>("");
-  const tabTitle = useRef<string | undefined>(undefined);
+  const saveTarget = useRef<SaveTarget | null>(null);
   const tabId = useRef<number | undefined>(undefined);
   // Captured once so the quick-save and the form re-save see identical content.
   const pageHtml = useRef<string | undefined>(undefined);
@@ -65,17 +78,15 @@ export default function Popup() {
     }, AUTO_CLOSE_MS);
   }, [clearCloseTimer]);
 
-  // Quick-save on mount
-  useEffect(() => {
-    if (dispatched.current) return;
-    dispatched.current = true;
-
-    (async () => {
+  // Saves the target, resolving it on the first run. A retry reuses it: an
+  // in-page save can only be taken once, so re-resolving would save the tab.
+  const runQuickSave = useCallback(async () => {
+    let target = saveTarget.current;
+    let snapshotTab: number | undefined;
+    if (!target) {
       // An in-page button (e.g. on a LinkedIn post) may have prepared this save:
       // then the popup saves that item rather than the page in the active tab.
       const pending = await takePendingSave();
-
-      let target: { url: string; title?: string; favIconUrl?: string };
       if (pending) {
         target = { url: pending.url, title: pending.title };
         pageHtml.current = pending.page_html;
@@ -87,50 +98,54 @@ export default function Popup() {
           setQuickSaveState({
             status: "error",
             message: err instanceof Error ? err.message : String(err),
-            isConnectionError: false,
+            problem: null,
           });
           return;
         }
         target = tab;
         tabId.current = tab.id;
+        snapshotTab = tab.id;
       }
+      saveTarget.current = target;
+    }
 
-      tabUrl.current = target.url;
-      tabTitle.current = target.title;
+    setQuickSaveState({ status: "saving", title: target.title, favIconUrl: target.favIconUrl });
 
-      setQuickSaveState({ status: "saving", title: target.title, favIconUrl: target.favIconUrl });
+    if (snapshotTab !== undefined) {
+      pageHtml.current = await queryPageHtml(snapshotTab, target.url);
+    }
 
-      if (!pending && tabId.current !== undefined) {
-        pageHtml.current = await queryPageHtml(tabId.current, target.url);
-      }
+    const response = await sendSaveMessage(target.url, target.title, {
+      page_html: pageHtml.current,
+    });
 
-      const response = await sendSaveMessage(target.url, target.title, {
-        page_html: pageHtml.current,
-      });
-
-      if (!response.success) {
-        setQuickSaveState({
-          status: "error",
-          message: response.error,
-          isConnectionError: isConnectionError(response.error),
-        });
-        return;
-      }
-
-      const data = response.data as SaveResultResponse;
+    if (!response.success) {
       setQuickSaveState({
-        status: "success",
-        title: target.title,
-        favIconUrl: target.favIconUrl,
-        bookmarkId: data.id,
-        saveStatus: data.status,
+        status: "error",
+        message: response.error,
+        problem: classifyConnectionError(response.error),
       });
-    })();
+      return;
+    }
 
-    return () => {
-      clearCloseTimer();
-    };
-  }, [clearCloseTimer]);
+    const data = response.data as SaveResultResponse;
+    setQuickSaveState({
+      status: "success",
+      title: target.title,
+      favIconUrl: target.favIconUrl,
+      bookmarkId: data.id,
+      saveStatus: data.status,
+    });
+  }, []);
+
+  // Quick-save on mount
+  useEffect(() => {
+    if (dispatched.current) return;
+    dispatched.current = true;
+    void runQuickSave();
+  }, [runQuickSave]);
+
+  useEffect(() => clearCloseTimer, [clearCloseTimer]);
 
   // Auto-close on success (only in quick-save mode)
   useEffect(() => {
@@ -170,7 +185,7 @@ export default function Popup() {
     );
 
     // Re-save the same URL with intent fields — merge semantics will handle dedup
-    const response = await sendSaveMessage(tabUrl.current, tabTitle.current, {
+    const response = await sendSaveMessage(saveTarget.current?.url ?? "", saveTarget.current?.title, {
       tags: values.tags,
       collection: values.collection,
       note: values.note,
@@ -281,16 +296,21 @@ export default function Popup() {
         </div>
       )}
 
-      {quickSaveState.status === "error" && (
+      {quickSaveState.status === "error" && isSetupProblem(quickSaveState.problem) && (
+        <InstallPrompt
+          problem={quickSaveState.problem}
+          onRetry={() => void runQuickSave()}
+          detail={quickSaveState.message}
+        />
+      )}
+
+      {quickSaveState.status === "error" && !isSetupProblem(quickSaveState.problem) && (
         <div data-testid="error-state">
           <h1 className="text-lg font-semibold text-red-700">Save Failed</h1>
           <p className="mt-1 text-sm text-gray-600">{quickSaveState.message}</p>
-          {quickSaveState.isConnectionError && (
-            <div className="mt-3 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800" data-testid="install-guidance">
-              <p className="font-medium">Couldn&apos;t reach AgentMark</p>
-              <p className="mt-2">1. Reload the extension at <span className="font-mono">chrome://extensions</span> (↻ icon), then try again.</p>
-              <p className="mt-2">2. If it still fails, register the native host and reload:</p>
-              <code className="mt-1 block rounded bg-amber-100 p-1.5 text-[11px] select-all">agentmark install-extension --extension-id {chrome.runtime?.id ?? "YOUR_ID"}</code>
+          {quickSaveState.problem && (
+            <div className="mt-3">
+              <InstallPrompt problem={quickSaveState.problem} onRetry={() => void runQuickSave()} />
             </div>
           )}
           <button
