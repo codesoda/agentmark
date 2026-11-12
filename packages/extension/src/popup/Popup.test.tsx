@@ -16,7 +16,12 @@ vi.mock("../shared/runtime", () => ({
   querySelectedText: vi.fn(),
   queryPageHtml: vi.fn(),
   takePendingSave: vi.fn(),
+  sendStatus: vi.fn(),
+  sendGetSetupState: vi.fn(),
+  sendSaveSettings: vi.fn(),
+  sendChooseFolder: vi.fn(),
 }));
+// Setup and polling are covered in Popup.setup.test.tsx; here the app is ready.
 
 import Popup from "./Popup";
 import {
@@ -28,6 +33,7 @@ import {
   querySelectedText,
   queryPageHtml,
   takePendingSave,
+  sendStatus,
 } from "../shared/runtime";
 
 const mockQueryActiveTab = vi.mocked(queryActiveTab);
@@ -38,6 +44,12 @@ const mockSaveLastUsedIntent = vi.mocked(saveLastUsedIntent);
 const mockQuerySelectedText = vi.mocked(querySelectedText);
 const mockQueryPageHtml = vi.mocked(queryPageHtml);
 const mockTakePendingSave = vi.mocked(takePendingSave);
+const mockSendStatus = vi.mocked(sendStatus);
+
+const READY: RuntimeResponse = {
+  success: true,
+  data: { type: "status_result", ok: true, version: "0.3.0", initialized: true },
+};
 
 function setupSuccessfulQuickSave() {
   mockQueryActiveTab.mockResolvedValue({
@@ -59,6 +71,7 @@ function setupFormDefaults() {
   mockQueryPageHtml.mockResolvedValue(undefined);
   mockTakePendingSave.mockResolvedValue(undefined);
   mockSaveLastUsedIntent.mockResolvedValue(undefined);
+  mockSendStatus.mockResolvedValue(READY);
 }
 
 describe("Popup", () => {
@@ -279,16 +292,9 @@ describe("Popup", () => {
     expect(screen.getByText("Unsupported page: chrome://extensions")).toBeDefined();
   });
 
-  it("shows the install prompt instead of Save Failed when the app is not installed", async () => {
-    mockQueryActiveTab.mockResolvedValue({
-      url: "https://example.com",
-      title: "Test",
-      id: 1,
-    });
-    mockSendSaveMessage.mockResolvedValue({
-      success: false,
-      error: "Specified native messaging host not found.",
-    });
+  it("shows the install screen and does not save when the app is not installed", async () => {
+    setupSuccessfulQuickSave();
+    mockSendStatus.mockResolvedValue({ success: false, error: "Specified native messaging host not found." });
 
     await act(async () => {
       render(<Popup />);
@@ -296,18 +302,17 @@ describe("Popup", () => {
 
     const prompt = screen.getByTestId("install-prompt");
     expect(prompt.getAttribute("data-problem")).toBe("not_installed");
-    expect(screen.getByText("Install the AgentMark app")).toBeDefined();
-    expect(prompt.textContent).toContain("agentmark install-extension --extension-id ext-id-123");
+    expect(screen.getByText("Finish setting up AgentMark")).toBeDefined();
     expect(screen.queryByText("Save Failed")).toBeNull();
     expect(screen.queryByTestId("error-state")).toBeNull();
-    expect(screen.getByTestId("install-prompt-detail").textContent).toBe(
-      "Specified native messaging host not found.",
-    );
+    expect(mockSendSaveMessage).not.toHaveBeenCalled();
+    // Nothing is snapshotted until there is an app to save to.
+    expect(mockQueryPageHtml).not.toHaveBeenCalled();
   });
 
   it("shows the connect step when the host is registered for another extension", async () => {
     setupSuccessfulQuickSave();
-    mockSendSaveMessage.mockResolvedValue({
+    mockSendStatus.mockResolvedValue({
       success: false,
       error: "Access to the specified native messaging host is forbidden.",
     });
@@ -317,7 +322,22 @@ describe("Popup", () => {
     });
 
     expect(screen.getByTestId("install-prompt").getAttribute("data-problem")).toBe("forbidden");
+    expect(screen.getByTestId("install-prompt").textContent).toContain(
+      "agentmark install-extension --extension-id ext-id-123",
+    );
     expect(screen.queryByText("Save Failed")).toBeNull();
+  });
+
+  it("shows reload guidance when the status probe finds the host broken", async () => {
+    setupSuccessfulQuickSave();
+    mockSendStatus.mockResolvedValue({ success: false, error: "Native host request timed out" });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+
+    expect(screen.getByTestId("install-prompt").getAttribute("data-problem")).toBe("host_crashed");
+    expect(mockSendSaveMessage).not.toHaveBeenCalled();
   });
 
   it("keeps Save Failed with reload guidance when the native host exits", async () => {
@@ -337,18 +357,14 @@ describe("Popup", () => {
     expect(screen.getByText("Couldn't reach AgentMark")).toBeDefined();
   });
 
-  it("re-sends the save from Try again and shows saved on success", async () => {
+  it("re-sends the save from Try again after a crash, reusing the page and its snapshot", async () => {
     setupSuccessfulQuickSave();
     mockQueryPageHtml.mockResolvedValue("<html>tab</html>");
-    mockSendSaveMessage.mockResolvedValueOnce({
-      success: false,
-      error: "Specified native messaging host not found.",
-    });
+    mockSendSaveMessage.mockResolvedValueOnce({ success: false, error: "Native host has exited." });
 
     await act(async () => {
       render(<Popup />);
     });
-
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     });
@@ -359,22 +375,14 @@ describe("Popup", () => {
       "Example Page",
       { page_html: "<html>tab</html>" },
     ]);
-    // The page was resolved and snapshotted once, not again for the retry.
     expect(mockQueryActiveTab).toHaveBeenCalledTimes(1);
     expect(mockQueryPageHtml).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("success-state")).toBeDefined();
-    expect(screen.queryByTestId("install-prompt")).toBeNull();
   });
 
-  it("retries a pending in-page save as that post, not the tab", async () => {
-    const post = {
-      url: "https://www.linkedin.com/feed/update/urn:li:share:42/",
-      title: "LinkedIn post by Ada Lovelace",
-      page_html: "<html><body>the post</body></html>",
-    };
-    // The service worker hands the pending save over only once.
-    mockTakePendingSave.mockResolvedValueOnce(post).mockResolvedValue(undefined);
+  it("moves to the install screen when the save finds the app gone, and saves once it is back", async () => {
     setupSuccessfulQuickSave();
+    mockQueryPageHtml.mockResolvedValue("<html>tab</html>");
     mockSendSaveMessage.mockResolvedValueOnce({
       success: false,
       error: "Specified native messaging host not found.",
@@ -383,17 +391,47 @@ describe("Popup", () => {
     await act(async () => {
       render(<Popup />);
     });
+    expect(screen.getByTestId("install-prompt").getAttribute("data-problem")).toBe("not_installed");
+
+    // "Check again" probes; the app is back, so the same page is saved again.
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    });
+
+    expect(mockSendSaveMessage).toHaveBeenCalledTimes(2);
+    expect(mockSendSaveMessage.mock.calls[1]).toEqual([
+      "https://example.com",
+      "Example Page",
+      { page_html: "<html>tab</html>" },
+    ]);
+    expect(mockQueryActiveTab).toHaveBeenCalledTimes(1);
+    expect(mockQueryPageHtml).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("success-state")).toBeDefined();
+  });
+
+  it("keeps a pending in-page save through the install screen and saves that post", async () => {
+    const post = {
+      url: "https://www.linkedin.com/feed/update/urn:li:share:42/",
+      title: "LinkedIn post by Ada Lovelace",
+      page_html: "<html><body>the post</body></html>",
+    };
+    // The service worker hands the pending save over only once.
+    mockTakePendingSave.mockResolvedValueOnce(post).mockResolvedValue(undefined);
+    setupSuccessfulQuickSave();
+    mockSendStatus.mockResolvedValueOnce({ success: false, error: "Specified native messaging host not found." });
+
+    await act(async () => {
+      render(<Popup />);
+    });
+    expect(mockSendSaveMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     });
 
     expect(mockTakePendingSave).toHaveBeenCalledTimes(1);
     expect(mockQueryActiveTab).not.toHaveBeenCalled();
-    expect(mockSendSaveMessage.mock.calls[1]).toEqual([
-      post.url,
-      post.title,
-      { page_html: post.page_html },
-    ]);
+    expect(mockSendSaveMessage.mock.calls).toEqual([[post.url, post.title, { page_html: post.page_html }]]);
     expect(screen.getByTestId("success-state")).toBeDefined();
     expect(screen.getByText(post.title)).toBeDefined();
   });

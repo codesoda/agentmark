@@ -7,6 +7,17 @@
  * All state here is an in-memory optimisation. The MV3 worker can be killed at
  * any time and Chrome resets a tab's icon when the tab navigates, so every
  * navigation repaints from the index and a cold start behaves correctly.
+ *
+ * `tabs` is an optional permission. Three modes:
+ * - Without it, tab events carry no URLs, so they are ignored (Chrome resets
+ *   the icon on navigation by itself). The icon still follows saves made from
+ *   the popup (the toolbar click grants `activeTab`) and pages that report
+ *   themselves through `reportPage` (the LinkedIn, X, Hacker News and Reddit content
+ *   script).
+ * - With it, every navigation and tab switch is looked up, as well.
+ * - Granted or revoked while running: `permissions.onAdded/onRemoved` flip the
+ *   mode. The tab listeners stay registered either way (MV3 only wakes the
+ *   worker for listeners added at top level); they check the flag instead.
  */
 
 import type { NativeRequest, RuntimeResponse } from "../shared/types";
@@ -62,8 +73,19 @@ interface SaveHold {
   timer?: ReturnType<typeof setTimeout>;
 }
 
+const TABS_PERMISSION: chrome.permissions.Permissions = { permissions: ["tabs"] };
+
+function mentionsTabs(permissions: chrome.permissions.Permissions | undefined): boolean {
+  return permissions?.permissions?.includes("tabs") ?? false;
+}
+
 /** Tracks and paints the toolbar icon of every tab. One instance per worker lifetime. */
 export class ToolbarIcon {
+  /** Whether the optional `tabs` permission is held; undefined until first asked. */
+  private tabsAllowed: boolean | undefined;
+  private tabsAllowedQuery: Promise<boolean> | undefined;
+  /** The page each tab's content script last reported, for answers that arrive late. */
+  private readonly reported = new Map<number, string>();
   /** Last index answer per tab, to skip lookups when the URL has not changed. */
   private readonly known = new Map<number, { url: string; saved: boolean }>();
   /** Lookups in flight, so the url-change and load-complete events share one. */
@@ -124,7 +146,64 @@ export class ToolbarIcon {
     }
   }
 
+  /** Whether tab events may be used: the optional `tabs` permission is held. Never throws. */
+  hasTabsPermission(): Promise<boolean> {
+    if (this.tabsAllowed !== undefined) return Promise.resolve(this.tabsAllowed);
+    if (!this.tabsAllowedQuery) {
+      this.tabsAllowedQuery = (async () => {
+        let allowed = false;
+        try {
+          allowed = (await chrome.permissions.contains(TABS_PERMISSION)) === true;
+        } catch {
+          allowed = false;
+        }
+        // A grant or revoke that arrived while we asked wins.
+        if (this.tabsAllowed === undefined) this.tabsAllowed = allowed;
+        this.tabsAllowedQuery = undefined;
+        return this.tabsAllowed;
+      })();
+    }
+    return this.tabsAllowedQuery;
+  }
+
+  /**
+   * A content script says tab `tabId` shows `url` (already validated by the
+   * caller). Paints saved or idle from the index without reading the tab, so
+   * it works without the `tabs` permission. Never throws.
+   */
+  async reportPage(tabId: number, url: string): Promise<void> {
+    try {
+      this.reported.set(tabId, url);
+      const hold = this.holds.get(tabId);
+      if (hold && hold.url === url) {
+        await setTabIcon(tabId, hold.look);
+        return;
+      }
+      const cached = this.known.get(tabId);
+      if (cached?.url === url) {
+        await setTabIcon(tabId, cached.saved ? "saved" : "idle");
+        return;
+      }
+      const epoch = this.saveEpoch;
+      const saved = await this.isSaved(url);
+      // The page moved on, or a save took the icon, while we waited.
+      if (this.reported.get(tabId) !== url) return;
+      if (this.holds.get(tabId)?.url === url) return;
+      if (epoch !== this.saveEpoch) return this.reportPage(tabId, url);
+      if (saved === undefined) {
+        this.known.delete(tabId);
+        await setTabIcon(tabId, "idle");
+        return;
+      }
+      this.known.set(tabId, { url, saved });
+      await setTabIcon(tabId, saved ? "saved" : "idle");
+    } catch {
+      // Icon work must never surface.
+    }
+  }
+
   forget(tabId: number): void {
+    this.reported.delete(tabId);
     this.known.delete(tabId);
     this.inflight.delete(tabId);
     const hold = this.holds.get(tabId);
@@ -140,12 +219,37 @@ export class ToolbarIcon {
     tab: chrome.tabs.Tab,
   ): void => {
     if (changeInfo.url !== undefined || changeInfo.status === "complete") {
-      void this.refresh(tabId, tab.url);
+      // A new page in this tab: its old report no longer applies.
+      if (changeInfo.url !== undefined && this.reported.get(tabId) !== changeInfo.url) {
+        this.reported.delete(tabId);
+      }
+      void this.hasTabsPermission().then((allowed) => {
+        if (allowed) return this.refresh(tabId, tab.url);
+      });
     }
   };
 
   readonly handleTabActivated = ({ tabId }: chrome.tabs.TabActiveInfo): void => {
-    void currentTabUrl(tabId).then((url) => this.refresh(tabId, url));
+    void this.hasTabsPermission().then(async (allowed) => {
+      if (allowed) await this.refresh(tabId, await currentTabUrl(tabId));
+    });
+  };
+
+  /** `chrome.permissions.onAdded`: tab events become usable; repaint the active tab. */
+  readonly handlePermissionsAdded = (permissions: chrome.permissions.Permissions): void => {
+    if (!mentionsTabs(permissions)) return;
+    this.tabsAllowed = true;
+    void activeTab().then((tab) => {
+      if (tab?.id !== undefined) return this.refresh(tab.id, tab.url);
+    });
+  };
+
+  /** `chrome.permissions.onRemoved`: stop using tab events and drop what they taught us. */
+  readonly handlePermissionsRemoved = (permissions: chrome.permissions.Permissions): void => {
+    if (!mentionsTabs(permissions)) return;
+    this.tabsAllowed = false;
+    this.known.clear();
+    this.inflight.clear();
   };
 
   readonly handleTabRemoved = (tabId: number): void => {

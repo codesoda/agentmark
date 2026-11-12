@@ -19,7 +19,7 @@ use crate::cli::Commands;
 /// Execute the parsed CLI command.
 pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        Commands::Init => init::run_init(),
+        Commands::Init(args) => init::run_init(args),
         Commands::Save(args) => save::run_save(args),
         Commands::List(args) => list::run_list(args),
         Commands::Show(args) => show::run_show(args),
@@ -29,7 +29,7 @@ pub fn dispatch(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Open(args) => open::run_open(args),
         Commands::Reprocess(args) => reprocess::run_reprocess(args),
         Commands::Delete(args) => delete::run_delete(args),
-        Commands::NativeHost => native_host::run_native_host(),
+        Commands::NativeHost(args) => native_host::run_native_host(args.origin),
         Commands::InstallExtension(args) => install_extension::run_install_extension(args),
         Commands::AddSkill => add_skill::run_add_skill(),
         Commands::PostProcess(args) => post_process::run_post_process(args),

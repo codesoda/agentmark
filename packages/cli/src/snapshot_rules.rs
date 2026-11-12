@@ -23,6 +23,10 @@ pub const BUILTIN_RULES: &[&str] = &[
     // Discussions are public, but generic article extraction mangles their
     // table layout; the agent renders them properly.
     "news.ycombinator.com/item",
+    // Site-wide, like X: an anonymous fetch of any Reddit page gets HTTP 200
+    // with an empty app shell or a bot check, never the post or comments.
+    // Covers www, old, new and sh, and the `/r/<sub>/s/<code>` share links.
+    "reddit.com",
 ];
 
 /// Returns true when `url` matches a built-in rule or one of `extra_rules`.
@@ -102,6 +106,35 @@ mod tests {
         assert!(!builtin("https://news.ycombinator.com/"));
         assert!(!builtin("https://news.ycombinator.com/newest"));
         assert!(!builtin("https://news.ycombinator.com/user?id=pg"));
+    }
+
+    #[test]
+    fn reddit_matches_site_wide_on_every_host() {
+        assert!(builtin(
+            "https://www.reddit.com/r/programming/comments/1xtrm8s/emudhras_official_incident_report_on_how_they/"
+        ));
+        assert!(builtin(
+            "https://www.reddit.com/r/programming/comments/1xtrm8s/comment/19shnsfed7fgg/"
+        ));
+        assert!(builtin(
+            "https://old.reddit.com/r/programming/comments/1006dz8/i_did_advent_of_code_on_a_playstation/j2ggh92/"
+        ));
+        assert!(builtin("https://reddit.com/r/rust/comments/abc123/"));
+        assert!(builtin("https://new.reddit.com/r/rust/comments/abc123/"));
+        assert!(builtin("https://sh.reddit.com/r/rust/comments/abc123/"));
+        assert!(builtin("https://www.reddit.com/r/rust/s/AbCdEf1234"));
+        assert!(builtin(
+            "https://www.reddit.com/user/someone/comments/abc123/x/"
+        ));
+        assert!(builtin("https://www.reddit.com/r/programming/"));
+    }
+
+    #[test]
+    fn reddit_lookalikes_do_not_match() {
+        assert!(!builtin("https://notreddit.com/r/rust/comments/abc123/"));
+        assert!(!builtin("https://reddit.com.evil.example/r/rust/"));
+        assert!(!builtin("https://example.com/reddit.com/r/rust/"));
+        assert!(!builtin("https://i.redd.it/abc123.png"));
     }
 
     #[test]

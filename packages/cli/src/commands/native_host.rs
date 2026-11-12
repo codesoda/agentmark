@@ -1,11 +1,11 @@
 //! Native messaging host command: `agentmark native-host`.
 //!
 //! Runs a long-lived loop reading Chrome native messaging frames from stdin,
-//! dispatching to save/status handlers, and writing responses to stdout.
+//! dispatching to save/status/setup handlers, and writing responses to stdout.
 //! All stdout output is protocol-only; diagnostics go to stderr.
 
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tracing::{debug, error, info, warn};
 
@@ -17,28 +17,45 @@ use crate::config;
 use crate::db::{self, BookmarkRepository};
 use crate::enrich::ProviderFactory;
 use crate::models::{BookmarkState, CaptureSource};
-use crate::native::messages::{BookmarkChanges, BookmarkSummary, IncomingMessage, OutgoingMessage};
+use crate::native::messages::{
+    BookmarkChanges, BookmarkSummary, FolderOutcome, IncomingMessage, OutgoingMessage,
+};
 use crate::native::protocol::{self, ProtocolError};
+use crate::setup::{
+    self, ConnectionRecord, FolderChoice, FolderDialog, SettingsChanges, SettingsError, SetupEnv,
+    SystemFolderDialog,
+};
+
+/// Longest `extension_version` recorded; longer values are truncated.
+const MAX_EXTENSION_VERSION_CHARS: usize = 64;
+
+/// Everything a request handler needs, injectable for tests.
+pub(crate) struct HostContext<'a> {
+    pub env: SetupEnv,
+    pub provider_factory: &'a ProviderFactory,
+    pub folder_dialog: &'a dyn FolderDialog,
+}
 
 // ── Public entry point ──────────────────────────────────────────────
 
-/// Entry point for `agentmark native-host` using real stdin/stdout.
-pub fn run_native_host() -> Result<(), Box<dyn std::error::Error>> {
+/// Entry point for the native host using real stdin/stdout. `origin` is the
+/// `chrome-extension://<id>/` argument Chrome passes, when started by Chrome.
+pub fn run_native_host(origin: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     info!(
-        "native-host starting (version {})",
+        "native-host starting (version {}, origin {origin:?})",
         env!("CARGO_PKG_VERSION")
     );
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
-    let home = config::home_dir()?;
-    let result = run_native_host_with_io(
-        &mut reader,
-        &mut writer,
-        &home,
-        &save::default_provider_factory,
-    );
+    let ctx = HostContext {
+        env: SetupEnv::from_process()?,
+        provider_factory: &save::default_provider_factory,
+        folder_dialog: &SystemFolderDialog,
+    };
+    let extension_id = origin.as_deref().and_then(setup::extension_id_from_origin);
+    let result = run_native_host_with_io(&mut reader, &mut writer, &ctx, extension_id);
     match &result {
         Ok(()) => info!("native-host exiting normally"),
         Err(e) => error!("native-host exiting with error: {e}"),
@@ -46,13 +63,24 @@ pub fn run_native_host() -> Result<(), Box<dyn std::error::Error>> {
     result
 }
 
-/// Testable host loop over injectable I/O, home dir, and provider factory.
+/// Testable host loop over injectable I/O and context.
 pub(crate) fn run_native_host_with_io(
     reader: &mut dyn Read,
     writer: &mut dyn Write,
-    home: &Path,
-    provider_factory: &ProviderFactory,
+    ctx: &HostContext,
+    extension_id: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let home = ctx.env.home.as_path();
+    // Liveness for the desktop app, best effort. `written` is the extension
+    // version in the last record this process wrote (`None` = none yet).
+    // Before setup `~/.agentmark/` does not exist, so the write is retried
+    // after each request until setup creates it.
+    let mut known_version: Option<String> = None;
+    let mut written: Option<Option<String>> = None;
+    if setup::record_connection(home, &ConnectionRecord::now(extension_id.clone(), None)) {
+        written = Some(None);
+    }
+
     loop {
         // Read one framed message
         let value = match protocol::read_message(reader) {
@@ -110,22 +138,48 @@ pub(crate) fn run_native_host_with_io(
             }
         };
 
+        let reported_version = match &incoming {
+            IncomingMessage::Status {
+                extension_version: Some(v),
+            } => Some(truncate_chars(v, MAX_EXTENSION_VERSION_CHARS)),
+            _ => None,
+        };
+
         // Dispatch
-        let response = dispatch(incoming, home, provider_factory);
+        let response = dispatch(incoming, ctx);
         debug!("sending response: {response:?}");
         write_response(writer, &response)?;
+
+        // Recorded after the reply so the file write never delays it.
+        if reported_version.is_some() {
+            known_version = reported_version;
+        }
+        if written.as_ref() != Some(&known_version) {
+            let record = ConnectionRecord::now(extension_id.clone(), known_version.clone());
+            if setup::record_connection(home, &record) {
+                written = Some(known_version.clone());
+            }
+        }
     }
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
 }
 
 // ── Dispatch ────────────────────────────────────────────────────────
 
-fn dispatch(
-    message: IncomingMessage,
-    home: &Path,
-    provider_factory: &ProviderFactory,
-) -> OutgoingMessage {
+fn dispatch(message: IncomingMessage, ctx: &HostContext) -> OutgoingMessage {
+    let home = ctx.env.home.as_path();
+    // "Not set up" is a state the extension handles, so requests that need a
+    // config get a typed error rather than whatever failed first.
+    if requires_setup(&message) && !setup::is_set_up(home) {
+        return OutgoingMessage::setup_required();
+    }
     match message {
-        IncomingMessage::Status => status_response(),
+        IncomingMessage::Status {
+            extension_version: _,
+        } => status_response(home),
         IncomingMessage::Save {
             url,
             title,
@@ -137,20 +191,90 @@ fn dispatch(
             page_html,
         } => {
             let req = build_save_request(url, title, tags, collection, note, action, page_html);
-            handle_save(req, home, provider_factory)
+            handle_save(req, home, ctx.provider_factory)
         }
         IncomingMessage::ListCollections => handle_list_collections(home),
         IncomingMessage::List { limit, state } => handle_list(home, limit, state),
         IncomingMessage::Show { id } => handle_show(home, &id),
         IncomingMessage::Update { id, changes } => handle_update(home, &id, &changes),
         IncomingMessage::LookupUrls { urls } => handle_lookup_urls(home, &urls),
+        IncomingMessage::GetSetupState => OutgoingMessage::SetupStateResult {
+            state: setup::read_state(&ctx.env),
+        },
+        IncomingMessage::SaveSettings { settings } => handle_save_settings(&ctx.env, &settings),
+        IncomingMessage::ChooseFolder { start_path } => handle_choose_folder(ctx, start_path),
     }
 }
 
-fn status_response() -> OutgoingMessage {
+/// Requests that read or write bookmarks need a config and index.
+fn requires_setup(message: &IncomingMessage) -> bool {
+    match message {
+        IncomingMessage::Save { .. }
+        | IncomingMessage::ListCollections
+        | IncomingMessage::List { .. }
+        | IncomingMessage::Show { .. }
+        | IncomingMessage::Update { .. }
+        | IncomingMessage::LookupUrls { .. } => true,
+        IncomingMessage::Status { .. }
+        | IncomingMessage::GetSetupState
+        | IncomingMessage::SaveSettings { .. }
+        | IncomingMessage::ChooseFolder { .. } => false,
+    }
+}
+
+/// Must stay cheap (the extension times out after 5 s): config read only.
+fn status_response(home: &Path) -> OutgoingMessage {
     OutgoingMessage::StatusResult {
         ok: true,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        initialized: setup::is_set_up(home),
+    }
+}
+
+fn handle_save_settings(env: &SetupEnv, changes: &SettingsChanges) -> OutgoingMessage {
+    match setup::apply_settings(env, changes) {
+        Ok(state) => {
+            info!("settings saved");
+            OutgoingMessage::SaveSettingsResult { state }
+        }
+        Err(SettingsError::Invalid(errors)) => {
+            info!(count = errors.len(), "settings rejected");
+            OutgoingMessage::SettingsInvalid { errors }
+        }
+        Err(e) => {
+            error!("saving settings failed: {e}");
+            OutgoingMessage::error(e.to_string())
+        }
+    }
+}
+
+fn handle_choose_folder(ctx: &HostContext, start_path: Option<String>) -> OutgoingMessage {
+    let home = ctx.env.home.as_path();
+    // A start folder that does not exist is ignored rather than an error.
+    let start = start_path
+        .map(|raw| expand_tilde(raw.trim(), home))
+        .filter(|p| p.is_dir());
+    let (outcome, path, reason) = match setup::choose_folder(ctx.folder_dialog, start.as_deref()) {
+        FolderChoice::Chosen(path) => (FolderOutcome::Chosen, Some(path), None),
+        FolderChoice::Cancelled => (FolderOutcome::Cancelled, None, None),
+        FolderChoice::Unavailable { reason } => (FolderOutcome::Unavailable, None, Some(reason)),
+    };
+    info!(?outcome, "folder dialog finished");
+    OutgoingMessage::ChooseFolderResult {
+        outcome,
+        path_display: path.as_deref().map(|p| setup::display_path(p, home)),
+        path: path.map(|p| p.display().to_string()),
+        reason,
+    }
+}
+
+fn expand_tilde(raw: &str, home: &Path) -> PathBuf {
+    if raw == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(raw)
     }
 }
 
@@ -358,6 +482,41 @@ mod tests {
 
     // ── Test helpers ────────────────────────────────────────────────
 
+    /// A folder dialog that always answers the same way.
+    struct FakeDialog(FolderChoice);
+
+    impl FolderDialog for FakeDialog {
+        fn pick(&self, _start: Option<&Path>) -> FolderChoice {
+            self.0.clone()
+        }
+    }
+
+    /// A context over `home` with no agents on the search path.
+    fn test_ctx<'a>(
+        home: &Path,
+        factory: &'a ProviderFactory,
+        dialog: &'a dyn FolderDialog,
+    ) -> HostContext<'a> {
+        HostContext {
+            env: SetupEnv {
+                home: home.to_path_buf(),
+                search_path: std::ffi::OsString::new(),
+            },
+            provider_factory: factory,
+            folder_dialog: dialog,
+        }
+    }
+
+    /// Dispatch with a fake dialog that cancels.
+    fn dispatch_with(
+        message: IncomingMessage,
+        home: &Path,
+        factory: &ProviderFactory,
+    ) -> OutgoingMessage {
+        let dialog = FakeDialog(FolderChoice::Cancelled);
+        dispatch(message, &test_ctx(home, factory, &dialog))
+    }
+
     /// Frame one or more JSON values into length-prefixed bytes for stdin.
     fn frame_messages(messages: &[serde_json::Value]) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -389,12 +548,9 @@ mod tests {
         let mut reader = Cursor::new(stdin_bytes.to_vec());
         let mut writer = Vec::new();
         let home = std::path::PathBuf::from("/nonexistent");
-        let factory: &ProviderFactory = &|_, _| {
-            Err(crate::agent::AgentError::InvalidAgent {
-                value: "test".to_string(),
-            })
-        };
-        let result = run_native_host_with_io(&mut reader, &mut writer, &home, factory);
+        let dialog = FakeDialog(FolderChoice::Cancelled);
+        let ctx = test_ctx(&home, no_factory(), &dialog);
+        let result = run_native_host_with_io(&mut reader, &mut writer, &ctx, None);
         (writer, result)
     }
 
@@ -587,9 +743,15 @@ mod tests {
                 value: "test".to_string(),
             })
         };
-        let response = dispatch(IncomingMessage::Status, &home, &factory);
+        let response = dispatch_with(
+            IncomingMessage::Status {
+                extension_version: None,
+            },
+            &home,
+            &factory,
+        );
         match response {
-            OutgoingMessage::StatusResult { ok, version } => {
+            OutgoingMessage::StatusResult { ok, version, .. } => {
                 assert!(ok);
                 assert_eq!(version, env!("CARGO_PKG_VERSION"));
             }
@@ -605,7 +767,7 @@ mod tests {
                 value: "test".to_string(),
             })
         };
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::Save {
                 url: "https://example.com".to_string(),
                 title: None,
@@ -620,7 +782,7 @@ mod tests {
             &factory,
         );
         match response {
-            OutgoingMessage::Error { message } => {
+            OutgoingMessage::Error { message, .. } => {
                 assert!(!message.is_empty());
             }
             other => panic!("expected Error, got {other:?}"),
@@ -635,9 +797,9 @@ mod tests {
                 value: "test".to_string(),
             })
         };
-        let response = dispatch(IncomingMessage::ListCollections, &home, &factory);
+        let response = dispatch_with(IncomingMessage::ListCollections, &home, &factory);
         match response {
-            OutgoingMessage::Error { message } => {
+            OutgoingMessage::Error { message, .. } => {
                 assert!(!message.is_empty());
             }
             other => panic!("expected Error, got {other:?}"),
@@ -652,7 +814,7 @@ mod tests {
                 value: "test".to_string(),
             })
         };
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::List {
                 limit: None,
                 state: None,
@@ -661,7 +823,7 @@ mod tests {
             &factory,
         );
         match response {
-            OutgoingMessage::Error { message } => {
+            OutgoingMessage::Error { message, .. } => {
                 assert!(
                     message.contains("not initialized"),
                     "expected init error, got: {message}"
@@ -710,7 +872,7 @@ mod tests {
                 value: "test".to_string(),
             })
         };
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::Show {
                 id: "am_123".to_string(),
             },
@@ -718,7 +880,7 @@ mod tests {
             &factory,
         );
         match response {
-            OutgoingMessage::Error { message } => {
+            OutgoingMessage::Error { message, .. } => {
                 assert!(!message.is_empty());
             }
             other => panic!("expected Error, got {other:?}"),
@@ -733,7 +895,7 @@ mod tests {
                 value: "test".to_string(),
             })
         };
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::Update {
                 id: "am_123".to_string(),
                 changes: crate::native::messages::BookmarkChanges {
@@ -748,7 +910,7 @@ mod tests {
             &factory,
         );
         match response {
-            OutgoingMessage::Error { message } => {
+            OutgoingMessage::Error { message, .. } => {
                 assert!(!message.is_empty());
             }
             other => panic!("expected Error, got {other:?}"),
@@ -820,7 +982,7 @@ mod tests {
     #[test]
     fn dispatch_lookup_urls_with_no_config_returns_error() {
         let home = std::path::PathBuf::from("/nonexistent");
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::LookupUrls {
                 urls: vec!["https://example.com".to_string()],
             },
@@ -828,7 +990,7 @@ mod tests {
             no_factory(),
         );
         match response {
-            OutgoingMessage::Error { message } => {
+            OutgoingMessage::Error { message, .. } => {
                 assert!(message.contains("not initialized"), "{message}");
             }
             other => panic!("expected Error, got {other:?}"),
@@ -848,7 +1010,7 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::LookupUrls { urls },
             tmp.path(),
             no_factory(),
@@ -871,7 +1033,7 @@ mod tests {
             .map(|i| format!("https://example.com/unsaved/{i}"))
             .collect();
         urls.push("https://example.com/a".to_string());
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::LookupUrls { urls },
             tmp.path(),
             no_factory(),
@@ -885,7 +1047,7 @@ mod tests {
     #[test]
     fn dispatch_lookup_urls_empty_request_returns_empty() {
         let tmp = home_with_bookmark("https://example.com/a");
-        let response = dispatch(
+        let response = dispatch_with(
             IncomingMessage::LookupUrls { urls: Vec::new() },
             tmp.path(),
             no_factory(),
@@ -906,5 +1068,376 @@ mod tests {
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0]["type"], "error");
         assert_eq!(responses[1]["type"], "status_result");
+    }
+
+    // ── Setup gate ─────────────────────────────────────────────────
+
+    #[test]
+    fn requests_needing_setup_return_setup_required_before_setup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gated = [
+            IncomingMessage::Save {
+                url: "https://example.com".into(),
+                title: None,
+                tags: None,
+                collection: None,
+                note: None,
+                selected_text: None,
+                action: None,
+                page_html: None,
+            },
+            IncomingMessage::ListCollections,
+            IncomingMessage::List {
+                limit: None,
+                state: None,
+            },
+            IncomingMessage::Show { id: "am_1".into() },
+            IncomingMessage::Update {
+                id: "am_1".into(),
+                changes: BookmarkChanges {
+                    user_tags: None,
+                    suggested_tags: None,
+                    collections: None,
+                    note: None,
+                    state: None,
+                },
+            },
+            IncomingMessage::LookupUrls { urls: vec![] },
+        ];
+        for message in gated {
+            let response = dispatch_with(message.clone(), tmp.path(), no_factory());
+            assert_eq!(
+                response,
+                OutgoingMessage::setup_required(),
+                "for {message:?}"
+            );
+        }
+        assert!(
+            !tmp.path().join(".agentmark").exists(),
+            "gated requests create nothing"
+        );
+    }
+
+    #[test]
+    fn status_reports_initialized() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let status = || {
+            dispatch_with(
+                IncomingMessage::Status {
+                    extension_version: Some("0.3.0".into()),
+                },
+                tmp.path(),
+                no_factory(),
+            )
+        };
+        assert!(matches!(
+            status(),
+            OutgoingMessage::StatusResult {
+                ok: true,
+                initialized: false,
+                ..
+            }
+        ));
+        setup::apply_settings(
+            &test_ctx(
+                tmp.path(),
+                no_factory(),
+                &FakeDialog(FolderChoice::Cancelled),
+            )
+            .env,
+            &SettingsChanges::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            status(),
+            OutgoingMessage::StatusResult {
+                initialized: true,
+                ..
+            }
+        ));
+    }
+
+    // ── Setup messages ─────────────────────────────────────────────
+
+    #[test]
+    fn get_setup_state_works_before_setup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        match dispatch_with(IncomingMessage::GetSetupState, tmp.path(), no_factory()) {
+            OutgoingMessage::SetupStateResult { state } => {
+                assert!(!state.initialized);
+                assert_eq!(state.settings.storage_path_display, "~/Documents/AgentMark");
+                assert_eq!(state.agents.len(), 3);
+            }
+            other => panic!("expected SetupStateResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_settings_then_ready() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = tmp.path().join("marks");
+        let changes = SettingsChanges {
+            storage_path: Some(storage.display().to_string()),
+            default_agent: Some("codex".into()),
+            enrichment_enabled: Some(false),
+            ..SettingsChanges::default()
+        };
+        match dispatch_with(
+            IncomingMessage::SaveSettings { settings: changes },
+            tmp.path(),
+            no_factory(),
+        ) {
+            OutgoingMessage::SaveSettingsResult { state } => {
+                assert!(state.initialized);
+                assert_eq!(state.settings.default_agent, "codex");
+                assert_eq!(state.bookmark_count, Some(0));
+            }
+            other => panic!("expected SaveSettingsResult, got {other:?}"),
+        }
+        assert!(storage.is_dir());
+        let response = dispatch_with(
+            IncomingMessage::LookupUrls {
+                urls: vec!["https://example.com".into()],
+            },
+            tmp.path(),
+            no_factory(),
+        );
+        assert_eq!(
+            response,
+            OutgoingMessage::LookupUrlsResult { saved: Vec::new() }
+        );
+    }
+
+    #[test]
+    fn save_settings_reports_field_errors_and_writes_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let changes = SettingsChanges {
+            storage_path: Some("relative/path".into()),
+            default_agent: Some("nobody".into()),
+            ..SettingsChanges::default()
+        };
+        match dispatch_with(
+            IncomingMessage::SaveSettings { settings: changes },
+            tmp.path(),
+            no_factory(),
+        ) {
+            OutgoingMessage::SettingsInvalid { errors } => {
+                let fields: Vec<_> = errors.iter().map(|e| e.field).collect();
+                assert_eq!(
+                    fields,
+                    [
+                        setup::SettingsField::StoragePath,
+                        setup::SettingsField::DefaultAgent
+                    ]
+                );
+            }
+            other => panic!("expected SettingsInvalid, got {other:?}"),
+        }
+        assert!(!tmp.path().join(".agentmark").exists());
+    }
+
+    #[test]
+    fn save_settings_write_failure_is_an_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // A file where ~/.agentmark should be.
+        std::fs::write(tmp.path().join(".agentmark"), "x").unwrap();
+        let changes = SettingsChanges {
+            storage_path: Some(tmp.path().join("marks").display().to_string()),
+            ..SettingsChanges::default()
+        };
+        match dispatch_with(
+            IncomingMessage::SaveSettings { settings: changes },
+            tmp.path(),
+            no_factory(),
+        ) {
+            OutgoingMessage::Error { message, code } => {
+                assert!(message.starts_with("failed to write"), "{message}");
+                assert_eq!(code, None);
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    // ── choose_folder ──────────────────────────────────────────────
+
+    /// Records the start folder it was given.
+    struct RecordingDialog {
+        answer: FolderChoice,
+        start: std::cell::RefCell<Option<Option<PathBuf>>>,
+    }
+
+    impl FolderDialog for RecordingDialog {
+        fn pick(&self, start: Option<&Path>) -> FolderChoice {
+            *self.start.borrow_mut() = Some(start.map(Path::to_path_buf));
+            self.answer.clone()
+        }
+    }
+
+    fn choose(
+        home: &Path,
+        answer: FolderChoice,
+        start_path: Option<&str>,
+    ) -> (OutgoingMessage, Option<PathBuf>) {
+        let dialog = RecordingDialog {
+            answer,
+            start: std::cell::RefCell::new(None),
+        };
+        let response = dispatch(
+            IncomingMessage::ChooseFolder {
+                start_path: start_path.map(String::from),
+            },
+            &test_ctx(home, no_factory(), &dialog),
+        );
+        let start = dialog.start.borrow().clone().expect("dialog was shown");
+        (response, start)
+    }
+
+    #[test]
+    fn choose_folder_chosen_with_display_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let picked = tmp.path().join("Bookmarks/");
+        let (response, _) = choose(tmp.path(), FolderChoice::Chosen(picked), None);
+        assert_eq!(
+            response.to_value().unwrap(),
+            serde_json::json!({
+                "type": "choose_folder_result",
+                "outcome": "chosen",
+                "path": tmp.path().join("Bookmarks").display().to_string(),
+                "path_display": "~/Bookmarks",
+                "reason": null
+            })
+        );
+    }
+
+    #[test]
+    fn choose_folder_cancelled_and_unavailable() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (response, _) = choose(tmp.path(), FolderChoice::Cancelled, None);
+        assert_eq!(
+            response,
+            OutgoingMessage::ChooseFolderResult {
+                outcome: FolderOutcome::Cancelled,
+                path: None,
+                path_display: None,
+                reason: None,
+            }
+        );
+        let (response, _) = choose(
+            tmp.path(),
+            FolderChoice::Unavailable {
+                reason: "No folder dialog is available on this system.".into(),
+            },
+            None,
+        );
+        assert_eq!(
+            response,
+            OutgoingMessage::ChooseFolderResult {
+                outcome: FolderOutcome::Unavailable,
+                path: None,
+                path_display: None,
+                reason: Some("No folder dialog is available on this system.".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn choose_folder_expands_and_checks_the_start_path() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("Documents")).unwrap();
+        let (_, start) = choose(tmp.path(), FolderChoice::Cancelled, Some("~/Documents"));
+        assert_eq!(start, Some(tmp.path().join("Documents")));
+        let (_, start) = choose(tmp.path(), FolderChoice::Cancelled, Some("~/Missing"));
+        assert_eq!(start, None, "a missing start folder is ignored");
+        let (_, start) = choose(tmp.path(), FolderChoice::Cancelled, None);
+        assert_eq!(start, None);
+    }
+
+    #[test]
+    fn choose_folder_works_before_setup() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (response, _) = choose(tmp.path(), FolderChoice::Cancelled, None);
+        assert!(matches!(
+            response,
+            OutgoingMessage::ChooseFolderResult { .. }
+        ));
+    }
+
+    // ── Liveness ───────────────────────────────────────────────────
+
+    const EXT_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+
+    fn run_with_home(home: &Path, messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        let mut reader = Cursor::new(frame_messages(messages));
+        let mut writer = Vec::new();
+        let dialog = FakeDialog(FolderChoice::Cancelled);
+        let ctx = test_ctx(home, no_factory(), &dialog);
+        run_native_host_with_io(&mut reader, &mut writer, &ctx, Some(EXT_ID.to_string())).unwrap();
+        decode_responses(&writer)
+    }
+
+    #[test]
+    fn records_connection_on_start_and_on_new_extension_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".agentmark")).unwrap();
+
+        run_with_home(tmp.path(), &[]);
+        let record = setup::read_connection(tmp.path()).expect("written on start");
+        assert_eq!(record.extension_id.as_deref(), Some(EXT_ID));
+        assert_eq!(record.extension_version, None);
+        assert_eq!(record.host_version, env!("CARGO_PKG_VERSION"));
+
+        let long = "9".repeat(100);
+        let responses = run_with_home(
+            tmp.path(),
+            &[json!({"type": "status", "extension_version": long})],
+        );
+        assert_eq!(responses[0]["type"], "status_result");
+        let record = setup::read_connection(tmp.path()).unwrap();
+        assert_eq!(record.extension_version, Some("9".repeat(64)), "truncated");
+    }
+
+    #[test]
+    fn liveness_failure_does_not_change_responses() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // A directory where the record should go makes every write fail.
+        std::fs::create_dir_all(tmp.path().join(".agentmark/extension-connection.json")).unwrap();
+        let responses = run_with_home(
+            tmp.path(),
+            &[
+                json!({"type": "status", "extension_version": "0.3.0"}),
+                json!({"type": "status"}),
+            ],
+        );
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["type"], "status_result");
+        assert_eq!(responses[1]["type"], "status_result");
+    }
+
+    #[test]
+    fn records_connection_once_setup_creates_the_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let responses = run_with_home(
+            tmp.path(),
+            &[
+                json!({"type": "status", "extension_version": "0.3.0"}),
+                json!({"type": "save_settings", "settings": {
+                    "storage_path": tmp.path().join("marks").display().to_string()
+                }}),
+            ],
+        );
+        assert_eq!(responses[1]["type"], "save_settings_result");
+        let record = setup::read_connection(tmp.path()).expect("written after setup");
+        assert_eq!(record.extension_version.as_deref(), Some("0.3.0"));
+        assert_eq!(record.extension_id.as_deref(), Some(EXT_ID));
+    }
+
+    #[test]
+    fn no_liveness_file_without_agentmark_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        run_with_home(
+            tmp.path(),
+            &[json!({"type": "status", "extension_version": "1"})],
+        );
+        assert!(!tmp.path().join(".agentmark").exists());
     }
 }

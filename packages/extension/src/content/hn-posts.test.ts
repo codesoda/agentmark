@@ -69,7 +69,7 @@ describe("Hacker News comment save button", () => {
     expect(html).not.toContain("data-agentmark");
 
     // It must survive a real HTML parse with the text still inside table cells.
-    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const parsed = new DOMParser().parseFromString(html!, "text/html");
     expect(parsed.querySelector("tr.athing.comtr .commtext")?.textContent).toContain("rising star");
   });
 

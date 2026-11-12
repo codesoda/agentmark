@@ -29,8 +29,66 @@ export function shouldScrollBeforeSnapshot(url: string | undefined): boolean {
   return path.startsWith("/company/") && !/\/posts\/?$/.test(path);
 }
 
-/** Runs inside the page. Returns the rendered HTML after optional preparation. */
-export async function capturePageHtml(scroll: boolean): Promise<string> {
+/**
+ * What is private on the sites AgentMark snapshots: a copy of `PRIVACY` in
+ * `src/content/private-content.ts` (content scripts cannot import shared
+ * code). `private-content.test.ts` fails when the two drift. Passed to
+ * `capturePageHtml` as an argument, because that function runs in the page
+ * and cannot see module-level values.
+ */
+export interface SnapshotPrivacy {
+  /** Removed from snapshots on every site (LinkedIn's messaging dock, X's messages drawer). */
+  selector: string;
+  /** Also removed on Reddit. */
+  redditSelector: string;
+  /** Reddit custom elements whose tag matches this (case-insensitive) are removed too. */
+  redditTag: string;
+  /** Pages with no snapshot: per site, private hosts and a private path pattern. */
+  pages: Array<{ domain: string; hosts: string[]; path: string }>;
+}
+
+export const SNAPSHOT_PRIVACY: SnapshotPrivacy = {
+  selector:
+    '[class*="msg-overlay"], [id*="msg-overlay"], [data-testid="DMDrawer"], [data-testid="DMDrawerHeader"]',
+  redditSelector: '#reddit-chat, [id^="chat-" i], iframe[src*="chat.reddit.com"]',
+  redditTag: "(?:^|-)(?:chat|inbox|notifications?|messages?|messaging)(?:-|$)",
+  pages: [
+    { domain: "reddit.com", hosts: ["chat.reddit.com", "mod.reddit.com"], path: "^/(?:message|notifications|chat|mail)(?:/|$)" },
+    { domain: "x.com", hosts: [], path: "^/(?:messages|i/chat)(?:/|$)" },
+    { domain: "twitter.com", hosts: [], path: "^/(?:messages|i/chat)(?:/|$)" },
+  ],
+};
+
+/**
+ * Runs inside the page. Returns the rendered HTML after optional preparation.
+ *
+ * Private conversations never leave the page: private pages (Reddit inbox,
+ * notifications, chat and mod mail, X messages) give no snapshot at all, and
+ * chat windows are cut out of every other page (LinkedIn's messaging dock
+ * lives in a shadow root, which `outerHTML` never includes). If the private
+ * parts cannot be removed for certain, the result is "" (no snapshot): this
+ * fails closed.
+ */
+export async function capturePageHtml(scroll: boolean, privacy: SnapshotPrivacy): Promise<string> {
+  let isPrivate: (el: Element) => boolean;
+  try {
+    const host = location.hostname.toLowerCase();
+    const onSite = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+    for (const page of privacy.pages) {
+      if (onSite(page.domain) && (page.hosts.includes(host) || new RegExp(page.path, "i").test(location.pathname))) {
+        return "";
+      }
+    }
+    const onReddit = onSite("reddit.com");
+    const selector = onReddit ? `${privacy.selector}, ${privacy.redditSelector}` : privacy.selector;
+    const tag = new RegExp(privacy.redditTag, "i");
+    isPrivate = (el: Element) => el.matches(selector) || (onReddit && el.tagName.includes("-") && tag.test(el.tagName));
+    // An invalid rule throws here, before anything is captured.
+    isPrivate(document.documentElement);
+  } catch {
+    return "";
+  }
+
   const BUDGET_MS = 10_000;
   const STEP_WAIT_MS = 300;
   const deadline = Date.now() + BUDGET_MS;
@@ -89,9 +147,13 @@ export async function capturePageHtml(scroll: boolean): Promise<string> {
 
       const page = body.cloneNode(true) as HTMLElement;
       // The iframe carries its own copy of the messaging dock: private, and not page content.
-      page
-        .querySelectorAll('[class*="msg-overlay"], [id*="msg-overlay"], script, style')
-        .forEach((el) => el.remove());
+      try {
+        Array.from(page.querySelectorAll("*"))
+          .filter((el) => isPrivate(el) || el.matches("script, style"))
+          .forEach((el) => el.remove());
+      } catch {
+        return "";
+      }
       if ((page.textContent ?? "").trim().length < MIN_TEXT) continue;
 
       const title = document.title.replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -101,5 +163,17 @@ export async function capturePageHtml(scroll: boolean): Promise<string> {
     // Fall through to the plain document snapshot.
   }
 
-  return document.documentElement?.outerHTML ?? "";
+  try {
+    const root = document.documentElement;
+    if (!root) return "";
+    if (!Array.from(root.querySelectorAll("*")).some(isPrivate)) return root.outerHTML;
+    const clone = root.cloneNode(true) as Element;
+    Array.from(clone.querySelectorAll("*"))
+      .filter(isPrivate)
+      .forEach((el) => el.remove());
+    return clone.outerHTML;
+  } catch {
+    // Private parts may still be in the page: send nothing.
+    return "";
+  }
 }

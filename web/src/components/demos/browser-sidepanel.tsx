@@ -145,62 +145,71 @@ export function BookmarkDetailView({
   const transition = STATE_TRANSITIONS[b.state];
   const actionable = b.suggestedTags.filter((t) => !b.userTags.includes(t));
   return (
-    <div className={cx("h-full space-y-3 overflow-y-auto px-4 py-3.5 starting:translate-x-2 @min-[560px]:space-y-3.5", VIEW_IN)}>
-      <button type="button" data-back onClick={onBack} className="text-[12px] font-medium text-accent hover:underline">
-        &larr; Back to list
-      </button>
+    <div className={cx("flex h-full flex-col starting:translate-x-2", VIEW_IN)}>
+      {/* The action sits in a footer under the scroll area, so the frame never cuts it off. */}
+      <div className="relative min-h-0 flex-1">
+        <div className="h-full space-y-3 overflow-y-auto px-4 py-3.5 @min-[560px]:space-y-3.5">
+          <button type="button" data-back onClick={onBack} className="text-[12px] font-medium text-accent hover:underline">
+            &larr; Back to list
+          </button>
 
-      <p className="line-clamp-2 text-[13.5px] font-medium leading-snug text-accent">{b.title}</p>
+          <p className="line-clamp-2 text-[13.5px] font-medium leading-snug text-accent">{b.title}</p>
 
-      <Summary text={b.summary} />
+          <Summary text={b.summary} />
 
-      <div>
-        <Label>Tags</Label>
-        <ul className="flex min-h-[32px] flex-wrap items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-1" aria-label="Tags">
-          {b.userTags.map((t) => (
-            <li key={t} className={cx(CHIP, USER_CHIP, CHIP_IN)}>
-              {t}
-              <ChipButton label={`Remove tag ${t}`} onClick={() => onRemove(t)} className="text-accent/70 hover:text-accent">
-                ×
-              </ChipButton>
-            </li>
-          ))}
-        </ul>
+          <div>
+            <Label>Tags</Label>
+            <ul className="flex min-h-[32px] flex-wrap items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-1" aria-label="Tags">
+              {b.userTags.map((t) => (
+                <li key={t} className={cx(CHIP, USER_CHIP, CHIP_IN)}>
+                  {t}
+                  <ChipButton label={`Remove tag ${t}`} onClick={() => onRemove(t)} className="text-accent/70 hover:text-accent">
+                    ×
+                  </ChipButton>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {actionable.length > 0 ? (
+            <div className={CHIP_IN}>
+              <Label>Suggested tags</Label>
+              <ul className="flex flex-wrap gap-1" aria-label="Suggested tags">
+                {actionable.map((t, i) => (
+                  <li key={t} className={cx(CHIP, SUGGESTED_CHIP, CHIP_IN)} style={{ transitionDelay: `${i * 70}ms` }}>
+                    {t}
+                    <ChipButton label={`Accept tag ${t}`} onClick={() => onAccept(t)} accept={t} className="text-accent hover:bg-accent-soft">
+                      ✓
+                    </ChipButton>
+                    <ChipButton label={`Reject tag ${t}`} onClick={() => onReject(t)} className="text-subtle hover:bg-sunken hover:text-ink">
+                      ×
+                    </ChipButton>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <p className="flex flex-wrap gap-x-3 text-[11px] text-subtle">
+            <span>{b.savedOn}</span>
+            <span>Extension</span>
+            <span>{STATE_LABELS[b.state]}</span>
+          </p>
+        </div>
+        {/* Content below the fold fades out instead of being cut mid-line. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-raised to-transparent" aria-hidden />
       </div>
 
-      {actionable.length > 0 ? (
-        <div className={CHIP_IN}>
-          <Label>Suggested tags</Label>
-          <ul className="flex flex-wrap gap-1" aria-label="Suggested tags">
-            {actionable.map((t, i) => (
-              <li key={t} className={cx(CHIP, SUGGESTED_CHIP, CHIP_IN)} style={{ transitionDelay: `${i * 70}ms` }}>
-                {t}
-                <ChipButton label={`Accept tag ${t}`} onClick={() => onAccept(t)} accept={t} className="text-accent hover:bg-accent-soft">
-                  ✓
-                </ChipButton>
-                <ChipButton label={`Reject tag ${t}`} onClick={() => onReject(t)} className="text-subtle hover:bg-sunken hover:text-ink">
-                  ×
-                </ChipButton>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      <p className="flex flex-wrap gap-x-3 text-[11px] text-subtle">
-        <span>{b.savedOn}</span>
-        <span>Extension</span>
-        <span>{STATE_LABELS[b.state]}</span>
-      </p>
-
       {transition ? (
-        <button
-          type="button"
-          onClick={() => onAdvance(transition.next)}
-          className="w-full rounded-md bg-accent-solid px-3 py-1.5 text-[12px] font-medium text-accent-solid-ink transition-opacity hover:opacity-90"
-        >
-          {transition.label}
-        </button>
+        <div className="shrink-0 border-t border-line px-4 py-2.5">
+          <button
+            type="button"
+            onClick={() => onAdvance(transition.next)}
+            className="w-full rounded-md bg-accent-solid px-3 py-1.5 text-[12px] font-medium text-accent-solid-ink transition-opacity hover:opacity-90"
+          >
+            {transition.label}
+          </button>
+        </div>
       ) : null}
     </div>
   );

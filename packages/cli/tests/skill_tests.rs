@@ -288,7 +288,7 @@ fn installer_is_idempotent() {
         home,
         Some(&shared),
         Some(&claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     assert!(output1.status.success());
 
@@ -297,7 +297,7 @@ fn installer_is_idempotent() {
         home,
         Some(&shared),
         Some(&claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     assert!(output2.status.success());
 
@@ -381,7 +381,7 @@ fn installer_replaces_existing_symlink() {
         home,
         Some(&shared),
         Some(&claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     assert!(output.status.success());
 
@@ -409,7 +409,7 @@ fn installer_replaces_existing_directory() {
         home,
         Some(&shared),
         Some(&claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     assert!(output.status.success());
 
@@ -432,8 +432,8 @@ fn installer_fails_when_shared_root_is_a_file() {
         &skill_dir(),
         home,
         Some(&shared),
-        None::<&Path>.map(|p| p),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
+        None::<&Path>,
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -456,7 +456,7 @@ fn installer_skips_when_agent_root_is_a_file() {
         home,
         Some(&shared),
         Some(&claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success());
@@ -479,7 +479,7 @@ fn installer_handles_env_override_roots() {
         home,
         Some(&custom_shared),
         Some(&custom_claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     assert!(output.status.success());
 
@@ -501,7 +501,7 @@ fn installer_handles_paths_with_spaces() {
         &home,
         Some(&shared),
         Some(&claude),
-        None::<&Path>.map(|p| p),
+        None::<&Path>,
     );
     assert!(
         output.status.success(),

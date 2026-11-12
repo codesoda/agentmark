@@ -29,6 +29,8 @@
   --code-bg: #ebe8e0;
 
   --danger: #b91c1c;
+  --ok: #15803d; /* "Found" badges in the extension mocks */
+  --ok-soft: #ecfdf3;
   --mark-idle: #6b7280;
   --mark-saving: #818cf8;
 
@@ -72,6 +74,8 @@
     --code-bg: #1e1e23;
 
     --danger: #f87171;
+    --ok: #86efac;
+    --ok-soft: #12261a;
     --mark-idle: #6b7280;
     --mark-saving: #818cf8;
 
@@ -108,6 +112,8 @@
   --color-accent-line: var(--accent-line);
   --color-code-bg: var(--code-bg);
   --color-danger: var(--danger);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
   --color-chrome: var(--chrome);
   --color-chrome-ink: var(--chrome-ink);
   --color-chrome-field: var(--chrome-field);

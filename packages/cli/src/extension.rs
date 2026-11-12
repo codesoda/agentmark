@@ -38,4 +38,27 @@ mod tests {
         let _ = extract_to(&target);
         assert!(target.exists());
     }
+
+    /// The development copy keeps the manifest `key` (only the store zip
+    /// drops it), so "Load unpacked" gives the store ID that
+    /// `register_native_hosts` already allows.
+    #[test]
+    fn embedded_manifest_keeps_the_key() {
+        if !is_embedded() {
+            return; // a build without the extension has nothing to check
+        }
+        let tmp = TempDir::new().unwrap();
+        extract_to(tmp.path()).unwrap();
+        let text = std::fs::read_to_string(tmp.path().join("manifest.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let source: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../extension/manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(manifest["key"].is_string(), "embedded manifest has no key");
+        assert_eq!(manifest["key"], source["key"]);
+    }
 }

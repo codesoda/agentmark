@@ -1,12 +1,16 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import HeroSaveDemo from "@/components/demos/hero-save-demo";
 import FeedBadgesDemo from "@/components/demos/feed-badges-demo";
 import BundleViewerDemo from "@/components/demos/bundle-viewer-demo";
 import TerminalDemo from "@/components/demos/terminal-demo";
 import SidepanelDemo from "@/components/demos/sidepanel-demo";
+import FirstRunDemo from "@/components/demos/first-run-demo";
 import { AgentMarkMark, BUNDLE_FILES, type MarkLook } from "@/components/demos/kit";
-import { INSTALL_CMD, REPO_URL } from "@/lib/site";
+import { INSTALL_LINKS, cliCommand } from "@/lib/platforms";
+import { REPO_URL } from "@/lib/site";
 import { CopyCommand } from "./copy-command";
+import { BUTTON_OUTLINE, BUTTON_SOLID, DownloadGlyph, ExtensionGlyph } from "./install-section";
 import { ArrowIcon, GitHubIcon } from "./icons";
 import { Code, Container, Eyebrow, Facts, Feature, H2, Lead, Section } from "./section";
 
@@ -31,24 +35,51 @@ export function Hero() {
               AgentMark saves each page as plain files on your own machine and indexes them for search. Claude Code and
               Codex find them and read them back when you ask.
             </p>
-            <div className="mt-9 max-w-[40rem]">
-              <CopyCommand command={INSTALL_CMD} label="Copy install command" size="lg" wrap />
-            </div>
-            <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
-              <a
-                href={REPO_URL}
-                className="inline-flex items-center gap-2 rounded-lg bg-ink px-4 py-2.5 text-[14px] font-medium text-bg transition-opacity hover:opacity-85"
-              >
-                <GitHubIcon />
-                View on GitHub
-              </a>
-              <a href="#install" className="inline-flex items-center gap-1.5 text-[14px] font-medium text-accent hover:underline">
-                Install steps
-                <ArrowIcon />
-              </a>
-            </div>
+            {INSTALL_LINKS.webStore || INSTALL_LINKS.macApp ? (
+              <div className="mt-9 flex flex-wrap items-center gap-x-3 gap-y-3">
+                {INSTALL_LINKS.webStore ? (
+                  <a href={INSTALL_LINKS.webStore} className={BUTTON_SOLID}>
+                    <ExtensionGlyph />
+                    Add to Chrome
+                  </a>
+                ) : null}
+                {INSTALL_LINKS.macApp ? (
+                  <a href={INSTALL_LINKS.macApp} className={INSTALL_LINKS.webStore ? BUTTON_OUTLINE : BUTTON_SOLID}>
+                    <DownloadGlyph />
+                    Download for Mac
+                  </a>
+                ) : null}
+                <p className="basis-full pt-2">
+                  <a href="#install" className="inline-flex items-center gap-1.5 text-[14px] font-medium text-accent hover:underline">
+                    All install options
+                    <ArrowIcon />
+                  </a>
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="mt-9 max-w-[40rem]">
+                  <CopyCommand command={cliCommand()} label="Copy install command" size="lg" wrap />
+                </div>
+                <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+                  <a href={REPO_URL} className={BUTTON_SOLID}>
+                    <GitHubIcon />
+                    View on GitHub
+                  </a>
+                  <a href="#install" className="inline-flex items-center gap-1.5 text-[14px] font-medium text-accent hover:underline">
+                    Install steps
+                    <ArrowIcon />
+                  </a>
+                </div>
+              </>
+            )}
             <p className="mt-6 max-w-[34rem] text-[13.5px] leading-relaxed text-subtle">
-              Pre-built for macOS on Apple Silicon. Intel Macs and Linux build from source. Needs Google Chrome.
+              {INSTALL_LINKS.macApp && INSTALL_LINKS.macIntelApp
+                ? "The Mac app sets up the rest on any Mac. Linux builds from source."
+                : INSTALL_LINKS.macApp
+                  ? "The Mac app is for Apple Silicon. Intel Macs and Linux build from source."
+                  : "One command on macOS with Apple Silicon. Intel Macs and Linux build from source."}{" "}
+              Needs Google Chrome. Setup happens in Chrome, not in a terminal.
             </p>
           </div>
           <div className="min-w-0">
@@ -109,7 +140,7 @@ export function Problem() {
         </figure>
         <figure className="flex flex-col gap-4">
           <div className="flex flex-col justify-center gap-1 rounded-lg border border-accent-line bg-accent-soft px-4 py-5 font-mono text-[12px] md:h-[7.5rem] md:py-0">
-            <p className="truncate text-accent">~/bookmarks/2026/11/12/plain-text-…/</p>
+            <p className="truncate text-accent">~/Documents/AgentMark/2026/11/12/plain-text-…/</p>
             <p className="truncate text-muted">
               ├ article.md <span className="text-subtle">· bookmark.md</span>
             </p>
@@ -158,11 +189,11 @@ export function Capture() {
               items={[
                 {
                   title: "A button per post",
-                  body: "On LinkedIn, X and Hacker News every post gets its own save button. Posts you saved before show as saved.",
+                  body: "On LinkedIn, X, Hacker News and Reddit every post gets its own save button. Posts you saved before show as saved.",
                 },
                 {
                   title: "An honest icon",
-                  body: "The toolbar icon turns blue on pages you have already saved. Blue only ever means saved.",
+                  body: "The toolbar icon turns blue when you save. One optional switch lets it show pages you saved before, on every site. Blue only ever means saved.",
                 },
                 {
                   title: "Videos, with words",
@@ -251,7 +282,7 @@ export function Agents() {
             <Eyebrow index="04">For your agent</Eyebrow>
             <H2 id="agents-title">Ask your agent what you saved.</H2>
             <Lead>
-              The installer adds an AgentMark skill for Claude Code and Codex. Mention your bookmarks and the agent
+              Installing AgentMark adds an agent skill for Claude Code and Codex. Mention your bookmarks and the agent
               uses the CLI: it searches, picks a match and reads the article.
             </Lead>
             <ul className="mt-10 max-w-[34rem] divide-y divide-line border-y border-line">
@@ -296,7 +327,7 @@ export function Writeup() {
                 },
                 {
                   title: "Hard pages, clean text",
-                  body: "Pages saved from the browser's copy, like LinkedIn posts, X threads and Hacker News discussions, get turned into readable markdown.",
+                  body: "Pages saved from the browser's copy, like LinkedIn posts, X threads, Hacker News discussions and Reddit threads, get turned into readable markdown.",
                 },
                 {
                   title: "Tags stay yours",
@@ -304,11 +335,7 @@ export function Writeup() {
                 },
                 {
                   title: "Your rules",
-                  body: (
-                    <>
-                      Steer summaries with <Code>system_prompt</Code> in <Code>config.toml</Code>, or turn them off.
-                    </>
-                  ),
+                  body: "Give summaries your own instructions in the side panel's Settings, or turn them off with one switch.",
                 },
               ]}
             />
@@ -340,9 +367,13 @@ export function Local() {
           <Eyebrow index="06">Privacy</Eyebrow>
           <H2 id="local-title">There is no AgentMark server.</H2>
           <Lead>
-            The CLI, the index and every bundle live on your machine. The extension talks only to the{" "}
-            <Code>agentmark</Code> binary, through Chrome&apos;s native messaging.
+            The app, the index and every bundle live on your computer. The extension talks only to the AgentMark app,
+            through Chrome&apos;s native messaging, and the app answers on the same machine.
           </Lead>
+          <Link href="/privacy" className="mt-8 inline-flex items-center gap-1.5 text-[14px] font-medium text-accent hover:underline">
+            Read the privacy policy
+            <ArrowIcon />
+          </Link>
         </div>
         <aside
           aria-labelledby="permission-title"
@@ -350,12 +381,17 @@ export function Local() {
         >
           <p className="font-mono text-[11.5px] uppercase tracking-[0.14em] text-subtle">About one permission</p>
           <h3 id="permission-title" className="mt-3 text-[19px] font-semibold tracking-tight text-ink">
-            Chrome warns that AgentMark can &ldquo;Read your browsing history&rdquo;.
+            &ldquo;Read your browsing history&rdquo; is optional, and off until you ask for it.
           </h3>
           <p className="mt-3 text-[15px] leading-relaxed text-muted">
-            That warning comes from the <Code>tabs</Code> permission. AgentMark uses it to read the current tab&apos;s
-            address and ask the local CLI one thing: is this page saved? The answer turns the toolbar icon blue. The
-            address goes to the binary on your machine and nowhere else.
+            Out of the box, the toolbar icon turns blue when you save, and on saved LinkedIn, X, Hacker News and Reddit
+            pages. Installing the extension does not ask for your browsing history.
+          </p>
+          <p className="mt-3 text-[15px] leading-relaxed text-muted">
+            To see saved pages on every site, turn on{" "}
+            <span className="text-ink">&ldquo;Show when the current page is already saved&rdquo;</span> in Settings.
+            Chrome then asks for the <Code>tabs</Code> permission. The extension sends the current tab&apos;s address to
+            the app on your computer, which answers and does not record it. Turn it off at any time.
           </p>
         </aside>
       </div>
@@ -371,97 +407,53 @@ export function Local() {
   );
 }
 
-/* --------------------------------------------------------------- Install */
+/* ----------------------------------------------------------------- Setup */
 
-function Step({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+export function Setup() {
   return (
-    <li className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-4 border-t border-line py-7 first:border-t-0 first:pt-0 sm:grid-cols-[3rem_minmax(0,1fr)]">
-      <span className="font-mono text-[13px] text-accent" aria-hidden>
-        {String(n).padStart(2, "0")}
-      </span>
-      <div className="min-w-0">
-        <h3 className="text-[18px] font-semibold tracking-tight text-ink">{title}</h3>
-        <div className="mt-2 space-y-4 text-[15px] leading-relaxed text-muted">{children}</div>
-      </div>
-    </li>
-  );
-}
-
-export function Install() {
-  return (
-    <Section id="install" labelledBy="install-title" className="bg-raised">
-      <Eyebrow index="07">Install</Eyebrow>
-      <H2 id="install-title" className="max-w-[44rem]">
-        One terminal command, one Chrome page.
-      </H2>
-      <Lead>
-        The installer sets up the CLI, unpacks the extension and adds the agent skill. Chrome needs two clicks and an ID
-        from you.
-      </Lead>
-
-      <div className="mt-14 grid gap-12 lg:grid-cols-[minmax(0,7fr)_minmax(0,4fr)] lg:gap-16">
-        <ol className="min-w-0" aria-label="Install steps">
-          <Step n={1} title="Run the installer">
-            <CopyCommand command={INSTALL_CMD} label="Copy install command" />
-            <p>
-              It downloads the latest release to <Code>~/.agentmark/bin</Code>, links it from <Code>~/.local/bin</Code>,
-              unpacks the extension to <Code>~/.agentmark/extension</Code> and installs the skill.
-            </p>
-          </Step>
-          <Step n={2} title="Load the extension in Chrome">
-            <p>
-              Open <Code>chrome://extensions</Code>, turn on <strong className="font-medium text-ink">Developer mode</strong>,
-              click <strong className="font-medium text-ink">Load unpacked</strong> and choose{" "}
-              <Code>~/.agentmark/extension</Code>. Copy the extension ID from its card.
-            </p>
-          </Step>
-          <Step n={3} title="Connect Chrome to the CLI">
-            <CopyCommand
-              command="agentmark install-extension --extension-id YOUR_EXTENSION_ID"
-              label="Copy install-extension command"
+    <Section id="setup" labelledBy="setup-title">
+      <Feature
+        copy={
+          <>
+            <Eyebrow index="07">First run</Eyebrow>
+            <H2 id="setup-title">Setup happens in Chrome, not in a terminal.</H2>
+            <Lead>
+              Click the AgentMark icon. If the app is not on your computer yet, the extension shows how to install it,
+              waits for it, then asks two questions and saves the page you are on.
+            </Lead>
+            <Facts
+              items={[
+                {
+                  title: "Your computer first",
+                  body: "The platform Chrome runs on sits at the top, with the one way to install there. The others are listed below it.",
+                },
+                {
+                  title: "It notices the app",
+                  body: "While the popup is open it checks for the app every two seconds. There is a Check again button too.",
+                },
+                {
+                  title: "Two choices",
+                  body: (
+                    <>
+                      A folder, <Code>~/Documents/AgentMark</Code> unless you pick another, and the agent that writes
+                      summaries. Summaries are one switch.
+                    </>
+                  ),
+                },
+                {
+                  title: "Change it later",
+                  body: "Settings in the side panel holds the folder, the agent and your summary instructions. Changing the folder does not move bookmarks you already saved.",
+                },
+              ]}
             />
-            <p>This registers the native messaging host, so the extension can reach the CLI.</p>
-          </Step>
-          <Step n={4} title="Pick your agent and folder">
-            <CopyCommand command="agentmark init" label="Copy init command" />
-            <p>
-              Choose the agent that writes summaries: <Code>claude</Code>, <Code>codex</Code> or <Code>pi</Code>. Then
-              choose the folder your bookmarks live in.
-            </p>
-          </Step>
-        </ol>
-
-        <aside aria-labelledby="req-title" className="self-start rounded-xl border border-line-strong bg-surface p-6 sm:p-7">
-          <h3 id="req-title" className="text-[15px] font-semibold text-ink">
-            What you need
-          </h3>
-          <ul className="mt-4 space-y-3 text-[14.5px] leading-relaxed text-muted">
-            <li>Google Chrome.</li>
-            <li>macOS on Apple Silicon for the pre-built binary.</li>
-            <li>
-              For summaries: Claude Code, Codex or pi, signed in. Optional.
-            </li>
-            <li>
-              For YouTube captions: <Code>yt-dlp</Code>. Optional.
-            </li>
-          </ul>
-          <div className="mt-6 border-t border-line pt-5">
-            <h3 className="text-[15px] font-semibold text-ink">Intel Mac or Linux</h3>
-            <p className="mt-2 text-[14.5px] leading-relaxed text-muted">
-              There is no pre-built binary yet. Clone the repo, build the extension in <Code>packages/extension</Code>{" "}
-              with <Code>npm ci && npm run build</Code>, then run <Code>./install.sh</Code> to build the CLI with Cargo.
-              Windows is not supported.
-            </p>
-          </div>
-          <a
-            href={REPO_URL}
-            className="mt-6 inline-flex items-center gap-2 text-[14px] font-medium text-accent hover:underline"
-          >
-            <GitHubIcon />
-            Read the README on GitHub
-          </a>
-        </aside>
-      </div>
+          </>
+        }
+        demo={<FirstRunDemo />}
+      />
     </Section>
   );
 }
+
+/* --------------------------------------------------------------- Install */
+
+export { Install } from "./install-section";

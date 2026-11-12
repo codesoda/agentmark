@@ -36,7 +36,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Rust checks
-        run: cargo fmt --check && cargo clippy -- -D warnings && cargo build && cargo test
+        run: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo build && cargo test
 
   build:
     name: Build ${{ matrix.target }}
@@ -87,9 +87,126 @@ jobs:
           name: agentmark-${{ matrix.target }}
           path: dist/*.tar.gz
 
+  app:
+    name: App ${{ matrix.target }}
+    needs: check
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86_64-apple-darwin can join this list once an Intel build is tested.
+        target: [aarch64-apple-darwin]
+    env:
+      # Repository secrets. Unset ones arrive empty; the build step exports
+      # only the non-empty ones, because Tauri treats an empty
+      # APPLE_CERTIFICATE as "sign" and then fails.
+      S_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      S_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      S_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      S_APPLE_ID: ${{ secrets.APPLE_ID }}
+      S_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      S_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      S_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      S_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            packages/extension/package-lock.json
+            packages/app/package-lock.json
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install app dependencies
+        run: npm ci
+        working-directory: packages/app
+
+      - name: Decide signing, notarisation and updates
+        id: mode
+        shell: bash
+        run: |
+          sign=false; notarize=false; updater=false
+          if [ -n "$S_APPLE_CERTIFICATE" ] && [ -n "$S_APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$S_APPLE_SIGNING_IDENTITY" ]; then
+            sign=true
+            if [ -n "$S_APPLE_ID" ] && [ -n "$S_APPLE_PASSWORD" ] && [ -n "$S_APPLE_TEAM_ID" ]; then notarize=true; fi
+          fi
+          # Updates need the public key in tauri.conf.json and the private key secret.
+          pubkey=$(node -p "require('./packages/app/src-tauri/tauri.conf.json').plugins.updater.pubkey")
+          if [ -n "$pubkey" ] && [ -n "$S_TAURI_SIGNING_PRIVATE_KEY" ]; then updater=true; fi
+          {
+            echo "sign=$sign"
+            echo "notarize=$notarize"
+            echo "updater=$updater"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### AgentMark app (${{ matrix.target }})"
+            if [ "$sign" = true ]; then echo "- Signed with a Developer ID certificate."; else
+              echo "- **WARNING: unsigned build.** The secrets APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY are not all set. macOS will refuse to open this app until the user allows it in System Settings > Privacy & Security."
+            fi
+            if [ "$sign" = true ] && [ "$notarize" = false ]; then
+              echo "- **WARNING: not notarised.** Set APPLE_ID, APPLE_PASSWORD (an app-specific password) and APPLE_TEAM_ID."
+            fi
+            if [ "$notarize" = true ]; then echo "- Notarised."; fi
+            if [ "$updater" = true ]; then echo "- Update artifacts signed; latest.json attached."; else
+              echo "- Updates off: set plugins.updater.pubkey and endpoints in packages/app/src-tauri/tauri.conf.json and the TAURI_SIGNING_PRIVATE_KEY secret."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$sign" = false ]; then echo "::warning title=Unsigned app::The AgentMark app in this release is not signed or notarised."; fi
+
+      - name: Build app
+        shell: bash
+        working-directory: packages/app
+        run: |
+          if [ "${{ steps.mode.outputs.sign }}" = true ]; then
+            export APPLE_CERTIFICATE="$S_APPLE_CERTIFICATE"
+            export APPLE_CERTIFICATE_PASSWORD="$S_APPLE_CERTIFICATE_PASSWORD"
+            export APPLE_SIGNING_IDENTITY="$S_APPLE_SIGNING_IDENTITY"
+          fi
+          if [ "${{ steps.mode.outputs.notarize }}" = true ]; then
+            export APPLE_ID="$S_APPLE_ID" APPLE_PASSWORD="$S_APPLE_PASSWORD" APPLE_TEAM_ID="$S_APPLE_TEAM_ID"
+          fi
+          set -- --target "${{ matrix.target }}"
+          if [ "${{ steps.mode.outputs.updater }}" = true ]; then
+            export TAURI_SIGNING_PRIVATE_KEY="$S_TAURI_SIGNING_PRIVATE_KEY"
+            [ -n "$S_TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] && export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$S_TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            echo '{"bundle":{"createUpdaterArtifacts":true}}' > "$RUNNER_TEMP/updater.conf.json"
+            set -- "$@" -- --config "$RUNNER_TEMP/updater.conf.json"
+          fi
+          sh scripts/build-app.sh "$@"
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          bundle="target/${{ matrix.target }}/release/bundle"
+          "$bundle/macos/AgentMark.app/Contents/MacOS/agentmark" --version
+          mkdir -p dist
+          cp "$bundle"/dmg/*.dmg "dist/AgentMark-${tag}-${{ matrix.target }}.dmg"
+          if [ "${{ steps.mode.outputs.updater }}" = true ]; then
+            cp "$bundle/macos/AgentMark.app.tar.gz" "dist/AgentMark-${tag}-${{ matrix.target }}.app.tar.gz"
+            cp "$bundle/macos/AgentMark.app.tar.gz.sig" "dist/AgentMark-${tag}-${{ matrix.target }}.app.tar.gz.sig"
+          fi
+          ls -l dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.target }}
+          path: dist/*
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,19 +217,46 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Write latest.json for the app updater
+        # Only when the app job produced signed update artifacts.
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          cd artifacts
+          shopt -s nullglob
+          sigs=(./*.app.tar.gz.sig)
+          [ ${#sigs[@]} -gt 0 ] || { echo "No update artifacts; updates are off."; exit 0; }
+          platforms="{}"
+          for sig in "${sigs[@]}"; do
+            sig="${sig#./}"
+            file="${sig%.sig}"
+            case "$file" in
+              *aarch64-apple-darwin*) key=darwin-aarch64 ;;
+              *x86_64-apple-darwin*) key=darwin-x86_64 ;;
+              *) continue ;;
+            esac
+            url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${file}"
+            platforms=$(jq --arg k "$key" --arg u "$url" --rawfile s "$sig" '. + {($k): {url: $u, signature: $s}}' <<<"$platforms")
+          done
+          jq -n --arg v "${tag#v}" --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson p "$platforms" \
+            '{version: $v, notes: "", pub_date: $d, platforms: $p}' > latest.json
+          cat latest.json
+
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz > checksums-sha256.txt
+          sha256sum ./*.tar.gz ./*.dmg | sed 's| \./| |' > checksums-sha256.txt
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
+          shopt -s nullglob
+          # CLI archives, the app's .dmg, and the updater files when present.
+          files=(artifacts/*.tar.gz artifacts/*.dmg artifacts/*.sig artifacts/checksums-sha256.txt)
+          if [ -f artifacts/latest.json ]; then files+=(artifacts/latest.json); fi
           gh release create "${tag}" \
             --title "${tag}" \
             --generate-notes \
             --draft \
-            artifacts/*.tar.gz \
-            artifacts/checksums-sha256.txt
+            "${files[@]}"

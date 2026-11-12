@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "AgentMark",
-  "version": "0.2.6",
-  "description": "Agent-first bookmarking for local AI workflows",
+  "version": "0.3.0",
+  "description": "Save web pages as plain files on your computer for your coding agents to search and read. Needs the AgentMark app on Mac or Linux.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxDawUjzuw6tff27izim+cUrO5G71l3KOz6UPy5L6GuZtqF7Tbthy3pkKRQ6nMfYR0tzILb9iIdJCqUDdh8sytPWOTDzuBwzH1YrQexgzuWt+zs279bBZfE5lgp35jsDsv0JDR+i4LTkRkv5/x8UNW8ReTYrQtbI9v2DU95vSGPujRx4WJJ7FqHLGGEQy80SEaOHX+xuMN4RhdR5r7SW8HiQzgeUmhF1t9317alo5OxFRTWEUcFafwobU+Tc5Y7h2fT/l1OXNVhJOyhtUJPWcnG1JbOaGtVQB7HKBuZgqHr5PJa1Ig3cLz+B3HeuV/ulSKUUZdhIYeC9hIWD3PV1K6QIDAQAB",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -31,7 +32,9 @@
     "nativeMessaging",
     "notifications",
     "storage",
-    "scripting",
+    "scripting"
+  ],
+  "optional_permissions": [
     "tabs"
   ],
   "content_scripts": [
@@ -50,7 +53,9 @@
         "https://www.linkedin.com/*",
         "https://x.com/*",
         "https://twitter.com/*",
-        "https://news.ycombinator.com/*"
+        "https://news.ycombinator.com/*",
+        "https://www.reddit.com/*",
+        "https://old.reddit.com/*"
       ],
       "js": [
         "content/content-posts.js"

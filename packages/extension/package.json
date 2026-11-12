@@ -1,11 +1,12 @@
 {
   "name": "agentmark-extension",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build",
+    "build:store-zip": "sh scripts/build-store-zip.sh",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
     "test": "vitest run"

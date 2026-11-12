@@ -6,6 +6,7 @@
  * bar. The permalink is in the DOM, so no MAIN-world helper is needed.
  */
 
+import { isPrivatePageOf } from "./private-content";
 import type { SiteAdapter } from "./save-button";
 
 const STATUS_PATH = /^\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/;
@@ -52,6 +53,8 @@ export const xAdapter: SiteAdapter = {
   // X is usually dark; the lighter indigo reads better there than the default.
   savingColor: "#a5b4fc",
   findSlot(post) {
+    // Messages pages are private: no buttons there.
+    if (isPrivatePageOf("x.com", window.location)) return null;
     // The action bar (reply, repost, like, …). Promoted or collapsed items without one are skipped.
     const bars = post.querySelectorAll('[role="group"]');
     const bar = bars[bars.length - 1];

@@ -2,23 +2,27 @@
 # install.sh — AgentMark installer.
 #
 # Downloads a pre-built binary from GitHub Releases (or builds from source
-# when run from a repo checkout), installs it, extracts the embedded Chrome
-# extension, installs the cross-agent skill, and runs first-time setup.
+# when run from a repo checkout), installs it, registers the native messaging
+# host with Chrome, and installs the cross-agent skill. It asks no questions:
+# setup (folder, agent, summaries) happens in Chrome or the desktop app.
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/codesoda/agentmark/main/install.sh | bash
 #   ./install.sh [options]       # from a repo checkout — builds from source
 #
 # Options:
-#   --skip-init         Skip interactive first-time setup (agentmark init)
-#   --from-source       Force build from source even when a release exists
-#   --extension-id ID   Chrome extension ID for native host registration
+#   --from-source       Build from source (needs cargo and npm) instead of downloading
+#   --extension-id ID   Also allow this (development) extension ID
 #   --help, -h          Show this help message
+#   --skip-init         Accepted for compatibility; does nothing
 #
 # Environment overrides:
 #   AGENTMARK_EXTENSION_ID — Chrome extension ID (alternative to --extension-id)
-#   AGENTMARK_HOME         — Override ~/.agentmark install root
 #   AGENTMARK_LOCAL_BIN    — Override ~/.local/bin symlink directory
+#   AGENTMARK_ALLOW_ROOT   — Set to 1 to install as root (refused otherwise)
+#
+# The binary always goes to $HOME/.agentmark/bin, the folder the CLI and the
+# desktop app use; there is no override for it.
 
 set -eu
 
@@ -99,21 +103,20 @@ Usage:
   ./install.sh [options]
 
 Options:
-  --skip-init         Skip interactive first-time setup (agentmark init)
-  --from-source       Force build from source even when a release exists
-  --extension-id ID   Chrome extension ID for native host registration
+  --from-source       Build from source (needs cargo and npm) instead of downloading
+  --extension-id ID   Also allow this (development) extension ID
   --help, -h          Show this help message
+  --skip-init         Accepted for compatibility; does nothing
 
 Environment overrides:
   AGENTMARK_EXTENSION_ID — Chrome extension ID (alternative to --extension-id)
-  AGENTMARK_HOME         — Override ~/.agentmark install root
   AGENTMARK_LOCAL_BIN    — Override ~/.local/bin symlink directory
+  AGENTMARK_ALLOW_ROOT   — Set to 1 to install as root (refused otherwise)
 USAGE
 }
 
 # --- Argument parsing ---
 
-SKIP_INIT=0
 FROM_SOURCE=0
 EXTENSION_ID="${AGENTMARK_EXTENSION_ID:-}"
 
@@ -121,7 +124,7 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --skip-init)
-                SKIP_INIT=1
+                # Setup no longer runs in the terminal; kept so old commands work.
                 ;;
             --from-source)
                 FROM_SOURCE=1
@@ -148,10 +151,14 @@ parse_args() {
 # --- Cleanup trap ---
 
 TMP_DIR=""
+STAGED_BINARY=""
 
 cleanup() {
     if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
         rm -rf "$TMP_DIR"
+    fi
+    if [ -n "$STAGED_BINARY" ] && [ -f "$STAGED_BINARY" ]; then
+        rm -f "$STAGED_BINARY"
     fi
 }
 
@@ -161,6 +168,7 @@ trap cleanup EXIT INT TERM
 
 INSTALLED_BINARY=""
 SOURCE_ROOT=""
+NEEDS_EXTENSION_ID=0
 
 # --- Platform detection ---
 
@@ -190,24 +198,61 @@ detect_target() {
 }
 
 # --- Post-install binary security ---
-# Ensures the installed binary is allowed to execute on the host OS.
-# Without these steps the binary may be silently blocked (e.g. by
-# macOS Gatekeeper), causing Chrome native messaging to time out.
+# Ensures a binary is allowed to execute on the host OS. Without these steps
+# the binary may be silently blocked (e.g. by macOS Gatekeeper), causing
+# Chrome native messaging to time out.
 
 secure_binary() {
+    target_file="$1"
     case "$(uname -s)" in
         Darwin)
             # Strip quarantine / provenance extended attributes
             if command -v xattr >/dev/null 2>&1; then
-                xattr -dr com.apple.quarantine "$INSTALLED_BINARY" 2>/dev/null || true
-                xattr -dr com.apple.provenance "$INSTALLED_BINARY" 2>/dev/null || true
+                xattr -d com.apple.quarantine "$target_file" 2>/dev/null || true
+                xattr -d com.apple.provenance "$target_file" 2>/dev/null || true
             fi
-            # Ad-hoc code sign so Gatekeeper allows execution
+            # Ad-hoc code sign so Gatekeeper allows execution. A fixed
+            # identifier keeps the signature independent of the temp name.
             if command -v codesign >/dev/null 2>&1; then
-                codesign --force --sign - "$INSTALLED_BINARY" 2>/dev/null || true
+                codesign --force --sign - --identifier agentmark "$target_file" 2>/dev/null || true
             fi
             ;;
     esac
+}
+
+# --- Install a binary to ~/.agentmark/bin ---
+# Copies to a temp file in the same folder, secures it, then renames it over
+# the old binary. Chrome may be running the old one: a rename leaves its open
+# file alone, while copying or signing in place can kill it.
+
+install_binary() {
+    source_binary="$1"
+    bin_dir="$HOME/.agentmark/bin"
+
+    if [ -e "$bin_dir" ] && [ ! -d "$bin_dir" ]; then
+        die "$bin_dir exists but is not a directory"
+    fi
+
+    mkdir -p "$bin_dir"
+    STAGED_BINARY="$bin_dir/.agentmark.tmp-$$"
+    cp "$source_binary" "$STAGED_BINARY"
+    chmod 755 "$STAGED_BINARY"
+    secure_binary "$STAGED_BINARY"
+    mv -f "$STAGED_BINARY" "$bin_dir/agentmark"
+    STAGED_BINARY=""
+
+    INSTALLED_BINARY="$bin_dir/agentmark"
+    ok_detail "Binary installed" "$INSTALLED_BINARY"
+}
+
+# --- Refuse to run as root ---
+# Everything goes into the user's home folder. Run as root (often through
+# sudo), the files end up owned by root and the user's Chrome cannot use them.
+
+refuse_root() {
+    if [ "$(id -u)" = 0 ] && [ "${AGENTMARK_ALLOW_ROOT:-0}" != 1 ]; then
+        die "Do not run the installer as root or with sudo. It installs into your own home folder, so run it again as your normal user. (To install for root anyway, set AGENTMARK_ALLOW_ROOT=1.)"
+    fi
 }
 
 # --- Download pre-built binary from GitHub Releases ---
@@ -252,21 +297,7 @@ download_release() {
 
     ok_detail "Downloaded" "$tag ($target)"
 
-    # Install to ~/.agentmark/bin
-    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
-    bin_dir="$agentmark_home/bin"
-
-    if [ -e "$bin_dir" ] && [ ! -d "$bin_dir" ]; then
-        die "$bin_dir exists but is not a directory"
-    fi
-
-    mkdir -p "$bin_dir"
-    cp "$extracted_binary" "$bin_dir/agentmark"
-    chmod +x "$bin_dir/agentmark"
-
-    INSTALLED_BINARY="$bin_dir/agentmark"
-    secure_binary
-    ok_detail "Binary installed" "$INSTALLED_BINARY"
+    install_binary "$extracted_binary"
 }
 
 # --- Source build path (repo checkout or --from-source) ---
@@ -309,6 +340,18 @@ build_from_source() {
         die "cargo is required for source builds (install Rust: https://rustup.rs)"
     fi
     ok "cargo found"
+    if ! command -v npm >/dev/null 2>&1; then
+        die "npm is required for source builds (install Node.js: https://nodejs.org)"
+    fi
+    ok "npm found"
+
+    # The CLI embeds packages/extension/dist at compile time, so the
+    # extension must be built first or the binary ships without it.
+    header "Building extension"
+    if ! (cd "$SOURCE_ROOT/packages/extension" && npm ci && npm run build); then
+        die "extension build failed"
+    fi
+    ok "Extension built"
 
     header "Building CLI"
     if ! (cd "$SOURCE_ROOT" && cargo build --release -p agentmark); then
@@ -322,21 +365,7 @@ build_from_source() {
 
     ok_detail "CLI built" "$built_binary"
 
-    # Install to ~/.agentmark/bin
-    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
-    bin_dir="$agentmark_home/bin"
-
-    if [ -e "$bin_dir" ] && [ ! -d "$bin_dir" ]; then
-        die "$bin_dir exists but is not a directory"
-    fi
-
-    mkdir -p "$bin_dir"
-    cp "$built_binary" "$bin_dir/agentmark"
-    chmod +x "$bin_dir/agentmark"
-
-    INSTALLED_BINARY="$bin_dir/agentmark"
-    secure_binary
-    ok_detail "Binary installed" "$INSTALLED_BINARY"
+    install_binary "$built_binary"
 }
 
 # --- Symlink to ~/.local/bin ---
@@ -373,42 +402,59 @@ ensure_local_bin_symlink() {
     return 0
 }
 
-# --- Install extension (delegated to CLI) ---
+# --- Register with Chrome (delegated to CLI) ---
+
+# The CLI prints this when it knows no extension ID: only a build with an
+# empty WEB_STORE_EXTENSION_ID (for example a fork with no store item) and no
+# --extension-id. Builds of this repo always allow the store ID. Keep in sync
+# with NO_EXTENSION_IDS_NOTE in packages/cli/src/commands/install_extension.rs.
+NO_IDS_MARKER="No extension IDs are known yet"
 
 install_extension_via_cli() {
-    header "Installing extension"
+    header "Registering with Chrome"
 
     if [ -n "$EXTENSION_ID" ]; then
-        # Extension ID already known — extract and register in one step
-        # shellcheck disable=SC2086
-        if "$INSTALLED_BINARY" install-extension --extension-id "$EXTENSION_ID"; then
-            return 0
-        else
-            warn "Extension installation had issues"
-            return 1
-        fi
+        set -- install-extension --extension-id "$EXTENSION_ID"
+    else
+        set -- install-extension
     fi
 
-    # Extract extension files first
-    if ! "$INSTALLED_BINARY" install-extension 2>/dev/null; then
-        warn "Extension extraction failed"
+    if ! ext_output="$("$INSTALLED_BINARY" "$@")"; then
+        if [ -n "$ext_output" ]; then
+            printf '%s\n' "$ext_output"
+        fi
+        warn "Registering the native messaging host failed"
         return 1
     fi
 
-    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
-    ext_dir="$agentmark_home/extension"
+    case "$ext_output" in
+        *"$NO_IDS_MARKER"*)
+            NEEDS_EXTENSION_ID=1
+            ;;
+        *)
+            if [ -n "$ext_output" ]; then
+                dim "$ext_output"
+            fi
+            ok "Native messaging host registered"
+            ;;
+    esac
+    return 0
+}
 
-    printf '\n'
-    info "Next: load the extension in Chrome"
+# --- Development path: unpacked extension ---
+
+print_development_steps() {
+    ext_dir="$HOME/.agentmark/extension"
+
+    header "Development: load the extension unpacked"
     dim "  1. Open chrome://extensions"
     dim "  2. Enable Developer mode (top-right toggle)"
     dim "  3. Click 'Load unpacked' and select:"
     dim "     $ext_dir"
     dim "  4. Copy the extension ID shown on the card"
-    printf '\n'
 
-    # macOS: open Chrome extensions page and copy path to clipboard
-    if [ "$(uname -s)" = "Darwin" ]; then
+    # Helpers for a person at a terminal on macOS only (never in pipes or tests).
+    if [ "$(uname -s)" = "Darwin" ] && [ -t 1 ]; then
         if command -v pbcopy >/dev/null 2>&1; then
             printf '%s' "$ext_dir" | pbcopy
             ok "Extension path copied to clipboard"
@@ -418,24 +464,8 @@ install_extension_via_cli() {
         fi
     fi
 
-    # If interactive, wait for the user to provide the extension ID
-    if [ -t 0 ]; then
-        printf '%b' "${C_OK}Enter the extension ID (or press Enter to skip): ${C_RESET}"
-        read -r user_ext_id
-        if [ -n "$user_ext_id" ]; then
-            if "$INSTALLED_BINARY" install-extension --extension-id "$user_ext_id"; then
-                return 0
-            else
-                warn "Native host registration failed — you can retry later with:"
-                dim "  agentmark install-extension --extension-id $user_ext_id"
-                return 1
-            fi
-        fi
-    fi
-
-    dim "  You can register the native host later with:"
-    dim "  agentmark install-extension --extension-id YOUR_EXTENSION_ID"
-    return 0
+    printf '\n'
+    info "Then run: agentmark install-extension --extension-id YOUR_EXTENSION_ID"
 }
 
 # --- Skill installation (delegated to CLI) ---
@@ -452,68 +482,11 @@ install_skill() {
     fi
 }
 
-# --- First-time setup ---
-
-run_first_time_setup() {
-    header "First-time setup"
-
-    # init requires interactive stdin for prompts — skip when piped (curl | bash)
-    if [ ! -t 0 ]; then
-        dim "  Non-interactive shell detected — skipping init"
-        dim "  Run 'agentmark init' manually when ready"
-        return 1
-    fi
-
-    if ! "$INSTALLED_BINARY" init; then
-        warn "agentmark init did not complete — you can run it later"
-        return 1
-    fi
-
-    ok "Setup complete"
-    return 0
-}
-
-# --- Summary ---
-
-print_summary() {
-    ext_installed="$1"
-    skill_installed="$2"
-    init_ran="$3"
-
-    agentmark_home="${AGENTMARK_HOME:-$HOME/.agentmark}"
-
-    header "Summary"
-
-    ok_detail "CLI binary" "$INSTALLED_BINARY"
-
-    if [ "$ext_installed" = 1 ]; then
-        ok_detail "Extension" "$agentmark_home/extension"
-    else
-        warn "Extension not installed"
-    fi
-
-    if [ "$skill_installed" = 1 ]; then
-        ok "Agent skill installed"
-    else
-        warn "Agent skill not installed"
-    fi
-
-    if [ "$init_ran" = 1 ]; then
-        ok "Configuration initialized"
-    elif [ "$SKIP_INIT" = 1 ]; then
-        dim "  Init: skipped (run 'agentmark init' when ready)"
-    else
-        warn "Init did not complete (run 'agentmark init' when ready)"
-    fi
-
-    printf '\n'
-    printf '%b%b  Done!%b\n\n' "$C_BOLD" "$C_OK" "$C_RESET"
-}
-
 # --- Main ---
 
 main() {
     parse_args "$@"
+    refuse_root
 
     printf '\n%b%bAgentMark Installer%b\n' "$C_BOLD" "$C_HEADER" "$C_RESET"
     dim "━━━━━━━━━━━━━━━━━━━"
@@ -530,33 +503,42 @@ main() {
         download_release
     fi
 
-    # Symlink
     ensure_local_bin_symlink || true
 
-    # Install extension (embedded in CLI binary) + native host
-    ext_installed=0
-    if install_extension_via_cli; then
-        ext_installed=1
+    ext_ok=1
+    if ! install_extension_via_cli; then
+        ext_ok=0
     fi
 
-    # Skill installation
-    skill_installed=0
-    if install_skill; then
-        skill_installed=1
+    # A missing skill only affects agents, not the extension: warn and go on.
+    install_skill || true
+
+    printf '\n'
+    if [ "$ext_ok" = 0 ]; then
+        die "AgentMark is installed at $INSTALLED_BINARY, but Chrome registration failed. Retry with: agentmark install-extension"
     fi
 
-    # First-time setup
-    init_ran=0
-    if [ "$SKIP_INIT" = 0 ]; then
-        if run_first_time_setup; then
-            init_ran=1
-        fi
-    else
-        dim "Skipping init (--skip-init)"
+    if [ "$NEEDS_EXTENSION_ID" = 1 ]; then
+        print_development_steps
+        return 0
     fi
 
-    # Summary
-    print_summary "$ext_installed" "$skill_installed" "$init_ran"
+    printf '%b%bDone. Go back to Chrome: AgentMark finishes setting up there.%b\n\n' "$C_BOLD" "$C_OK" "$C_RESET"
+    print_unpacked_hint
+}
+
+# The development copy carries the manifest key, so it loads with the store ID
+# that is already registered: no ID to copy. Shown while the store listing is
+# not live; people who already have the extension can ignore it.
+print_unpacked_hint() {
+    ext_dir="$HOME/.agentmark/extension"
+    if [ ! -f "$ext_dir/manifest.json" ]; then
+        return 0
+    fi
+    dim "No AgentMark extension in Chrome yet? Open chrome://extensions, turn on"
+    dim "Developer mode, click 'Load unpacked' and select:"
+    dim "  $ext_dir"
+    printf '\n'
 }
 
 main "$@"

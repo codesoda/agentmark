@@ -16,7 +16,7 @@ const LISTED = [SAMPLE_BOOKMARK, FTS_GUIDE, CLI_DESIGN, BACKUPS, DOCS];
 const SEARCH_HITS = [SAMPLE_BOOKMARK, DOCS];
 
 const QUERY = "plain text";
-const DATE_DIR = `~/bookmarks/${SAMPLE_DATE_DIR}`;
+const DATE_DIR = `~/Documents/AgentMark/${SAMPLE_DATE_DIR}`;
 const LS_LINES = [FTS_GUIDE, SAMPLE_BOOKMARK].map(bundleDirName).sort();
 
 const SHOW_INPUT = { summary: SAMPLE.summary, article: ARTICLE_MD };

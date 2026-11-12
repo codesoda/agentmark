@@ -112,9 +112,18 @@ pub(crate) fn execute_delete_with_io(
             source,
         })?;
     }
-    repo.delete(&bookmark.id)?;
-
-    writeln!(writer, "Deleted {}", bookmark.id).ok();
+    // The row can vanish while the user is at the prompt (another delete, a
+    // second terminal); only claim the delete when this call removed it.
+    if repo.delete(&bookmark.id)? {
+        writeln!(writer, "Deleted {}", bookmark.id).ok();
+    } else {
+        writeln!(
+            writer,
+            "{} was already removed from the index by something else.",
+            bookmark.id
+        )
+        .ok();
+    }
     Ok(())
 }
 
@@ -303,6 +312,57 @@ mod tests {
         result.unwrap();
         assert!(out.contains("no files found"), "{out}");
         assert!(!row_exists(&env));
+    }
+
+    /// Answers "y" but deletes the row first, like a second process would
+    /// while the user is at the prompt.
+    struct RacingReader<'a> {
+        env: &'a Env,
+        inner: Cursor<Vec<u8>>,
+        raced: bool,
+    }
+
+    impl std::io::Read for RacingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.read(buf)
+        }
+    }
+
+    impl BufRead for RacingReader<'_> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            if !self.raced {
+                self.raced = true;
+                let conn =
+                    db::open_and_migrate(&config::index_db_path(self.env.tmp.path())).unwrap();
+                BookmarkRepository::new(&conn)
+                    .delete(&self.env.bookmark.id)
+                    .unwrap();
+            }
+            self.inner.fill_buf()
+        }
+
+        fn consume(&mut self, amt: usize) {
+            self.inner.consume(amt)
+        }
+    }
+
+    #[test]
+    fn row_removed_during_prompt_is_not_reported_as_deleted() {
+        let env = env_with_bookmark();
+        let args = DeleteArgs {
+            id: env.bookmark.id.clone(),
+            yes: false,
+        };
+        let mut reader = RacingReader {
+            env: &env,
+            inner: Cursor::new(b"y\n".to_vec()),
+            raced: false,
+        };
+        let mut out = Vec::new();
+        execute_delete_with_io(env.tmp.path(), &args, &mut reader, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains("Deleted"), "{out}");
+        assert!(out.contains("already removed"), "{out}");
     }
 
     #[test]

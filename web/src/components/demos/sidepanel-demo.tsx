@@ -177,8 +177,10 @@ export default function SidepanelDemo() {
                   }
                 />
               )}
-              {/* Content below the fold fades out instead of being cut mid-control. */}
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-raised to-transparent @min-[560px]:h-10" aria-hidden />
+              {/* The list fades out below the fold instead of being cut mid-card. The detail view draws its own. */}
+              {open ? null : (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-raised to-transparent @min-[560px]:h-10" aria-hidden />
+              )}
             </div>
           </aside>
         </div>

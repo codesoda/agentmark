@@ -275,7 +275,11 @@ describe("toolbar-icon", () => {
     });
   });
 
-  describe("tab events", () => {
+  describe("tab events with the tabs permission", () => {
+    beforeEach(() => {
+      chromeMock.permissions.contains.mockResolvedValue(true);
+    });
+
     it("refreshes on a URL change or a finished load, not on other updates", async () => {
       icon.handleTabUpdated(TAB, { title: "x" }, { url: PAGE } as chrome.tabs.Tab);
       icon.handleTabUpdated(TAB, { status: "loading" }, { url: PAGE } as chrome.tabs.Tab);
@@ -297,6 +301,164 @@ describe("toolbar-icon", () => {
       await settle();
       expect(chromeMock.tabs.get).toHaveBeenCalledWith(TAB);
       expect(lastLook()).toBe("saved");
+    });
+  });
+
+  describe("tab events without the tabs permission", () => {
+    it("ignores tab events, which carry no URLs then, and never asks the index", async () => {
+      chromeMock.permissions.contains.mockResolvedValue(false);
+      icon.handleTabUpdated(TAB, { status: "complete" }, { id: TAB } as chrome.tabs.Tab);
+      icon.handleTabActivated({ tabId: TAB, windowId: 1 });
+      await settle();
+
+      expect(chromeMock.permissions.contains).toHaveBeenCalledWith({ permissions: ["tabs"] });
+      expect(chromeMock.action.setIcon).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it("asks Chrome for the permission once and remembers the answer", async () => {
+      chromeMock.permissions.contains.mockResolvedValue(false);
+      icon.handleTabUpdated(TAB, { status: "complete" }, { id: TAB } as chrome.tabs.Tab);
+      icon.handleTabUpdated(TAB, { status: "complete" }, { id: TAB } as chrome.tabs.Tab);
+      await settle();
+      icon.handleTabActivated({ tabId: TAB, windowId: 1 });
+      await settle();
+      expect(chromeMock.permissions.contains).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats a failing permissions check as no permission", async () => {
+      chromeMock.permissions.contains.mockRejectedValue(new Error("nope"));
+      icon.handleTabUpdated(TAB, { status: "complete" }, { url: PAGE } as chrome.tabs.Tab);
+      await settle();
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it("still shows a popup save of the active tab (the click grants activeTab)", async () => {
+      chromeMock.permissions.contains.mockResolvedValue(false);
+      await icon.trackActiveTabSave(PAGE, Promise.resolve(saveOk));
+      expect(lastLook()).toBe("saved-fresh");
+    });
+  });
+
+  describe("permission granted or revoked while running", () => {
+    it("starts using tab events once granted, and repaints the active tab", async () => {
+      chromeMock.permissions.contains.mockResolvedValue(false);
+      icon.handleTabUpdated(TAB, { status: "complete" }, { url: PAGE } as chrome.tabs.Tab);
+      await settle();
+      expect(request).not.toHaveBeenCalled();
+
+      request.mockResolvedValue(savedResult([PAGE]));
+      icon.handlePermissionsAdded({ permissions: ["tabs"] });
+      await settle();
+      expect(lastLook()).toBe("saved");
+
+      icon.handleTabUpdated(TAB, { url: OTHER }, { url: OTHER } as chrome.tabs.Tab);
+      tabUrl = OTHER;
+      await settle();
+      expect(request).toHaveBeenLastCalledWith({ type: "lookup_urls", urls: [OTHER] });
+    });
+
+    it("ignores grants of other permissions", async () => {
+      chromeMock.permissions.contains.mockResolvedValue(false);
+      icon.handlePermissionsAdded({ permissions: ["notifications"] });
+      icon.handleTabUpdated(TAB, { status: "complete" }, { url: PAGE } as chrome.tabs.Tab);
+      await settle();
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it("stops using tab events when revoked, and forgets cached answers", async () => {
+      chromeMock.permissions.contains.mockResolvedValue(true);
+      request.mockResolvedValue(savedResult([PAGE]));
+      icon.handleTabUpdated(TAB, { status: "complete" }, { url: PAGE } as chrome.tabs.Tab);
+      await settle();
+      expect(request).toHaveBeenCalledTimes(1);
+
+      icon.handlePermissionsRemoved({ permissions: ["tabs"] });
+      icon.handleTabUpdated(TAB, { status: "complete" }, { url: PAGE } as chrome.tabs.Tab);
+      icon.handleTabActivated({ tabId: TAB, windowId: 1 });
+      await settle();
+      expect(request).toHaveBeenCalledTimes(1);
+
+      // The cache went with the permission: a report asks the index again.
+      await icon.reportPage(TAB, PAGE);
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it("lets a grant that lands during the first permissions check win", async () => {
+      let answer!: (value: boolean) => void;
+      chromeMock.permissions.contains.mockImplementation(() => new Promise<boolean>((r) => { answer = r; }));
+      icon.handleTabUpdated(TAB, { status: "complete" }, { url: PAGE } as chrome.tabs.Tab);
+      icon.handlePermissionsAdded({ permissions: ["tabs"] });
+      answer(false);
+      await settle();
+      expect(await icon.hasTabsPermission()).toBe(true);
+    });
+  });
+
+  describe("reportPage (a content script reports its page)", () => {
+    beforeEach(() => {
+      chromeMock.permissions.contains.mockResolvedValue(false);
+      // Without `tabs`, Chrome does not tell us the tab's URL.
+      chromeMock.tabs.get.mockImplementation(async (tabId: number) => ({ id: tabId }) as chrome.tabs.Tab);
+    });
+
+    it("paints a saved page blue without reading the tab", async () => {
+      request.mockResolvedValue(savedResult([PAGE]));
+      await icon.reportPage(TAB, PAGE);
+      expect(request).toHaveBeenCalledWith({ type: "lookup_urls", urls: [PAGE] });
+      expect(lastLook()).toBe("saved");
+    });
+
+    it("paints an unsaved page idle", async () => {
+      await icon.reportPage(TAB, PAGE);
+      expect(lastLook()).toBe("idle");
+    });
+
+    it("uses the cached answer for the same page", async () => {
+      request.mockResolvedValue(savedResult([PAGE]));
+      await icon.reportPage(TAB, PAGE);
+      await icon.reportPage(TAB, PAGE);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(lastLook()).toBe("saved");
+    });
+
+    it("drops a late answer when the tab has reported another page since", async () => {
+      let answer!: (r: RuntimeResponse) => void;
+      request.mockImplementationOnce(() => new Promise<RuntimeResponse>((r) => { answer = r; }));
+      const first = icon.reportPage(TAB, PAGE);
+      await icon.reportPage(TAB, OTHER);
+      expect(lastLook()).toBe("idle");
+      answer(savedResult([PAGE]));
+      await first;
+      expect(lastLook()).toBe("idle");
+    });
+
+    it("drops a late answer when the tab navigated to another URL", async () => {
+      let answer!: (r: RuntimeResponse) => void;
+      request.mockImplementationOnce(() => new Promise<RuntimeResponse>((r) => { answer = r; }));
+      const report = icon.reportPage(TAB, PAGE);
+      icon.handleTabUpdated(TAB, { url: OTHER }, { id: TAB } as chrome.tabs.Tab);
+      answer(savedResult([PAGE]));
+      await report;
+      expect(chromeMock.action.setIcon).not.toHaveBeenCalled();
+    });
+
+    it("shows idle when the host cannot answer", async () => {
+      request.mockResolvedValue({ success: false, error: "Specified native messaging host not found." });
+      await icon.reportPage(TAB, PAGE);
+      expect(lastLook()).toBe("idle");
+    });
+
+    it("leaves a running save's look alone", async () => {
+      let finish!: (r: RuntimeResponse) => void;
+      // A popup save: the click's activeTab grant lets the worker read this tab's URL.
+      chromeMock.tabs.get.mockImplementation(async (tabId: number) => ({ id: tabId, url: PAGE }) as chrome.tabs.Tab);
+      const saving = icon.trackTabSave(TAB, PAGE, new Promise<RuntimeResponse>((r) => { finish = r; }));
+      await settle();
+      await icon.reportPage(TAB, PAGE);
+      expect(lastLook()).toBe("saving");
+      finish(saveOk);
+      await saving;
     });
   });
 });

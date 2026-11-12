@@ -23,6 +23,8 @@ export interface SaveRequest {
 
 export interface StatusRequest {
   type: "status";
+  /** This extension's version, so the host can record which build connected. */
+  extension_version?: string;
 }
 
 export interface ListCollectionsRequest {
@@ -62,7 +64,33 @@ export interface LookupUrlsRequest {
   urls: string[];
 }
 
-export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest | ShowRequest | UpdateRequest | LookupUrlsRequest;
+export interface GetSetupStateRequest {
+  type: "get_setup_state";
+}
+
+/** Each key is optional: absent = keep the current value (contract §5.2). */
+export interface SettingsChanges {
+  storage_path?: string;
+  default_agent?: string;
+  enrichment_enabled?: boolean;
+  /** `null` clears the instructions. */
+  system_prompt?: string | null;
+  /** Replaces the whole user list. */
+  snapshot_sites?: string[];
+}
+
+export interface SaveSettingsRequest {
+  type: "save_settings";
+  settings: SettingsChanges;
+}
+
+/** Sent only one-shot (`sendNativeMessage`), never on the shared port: the dialog can stay open for minutes. */
+export interface ChooseFolderRequest {
+  type: "choose_folder";
+  start_path?: string;
+}
+
+export type NativeRequest = SaveRequest | StatusRequest | ListCollectionsRequest | ListRequest | ShowRequest | UpdateRequest | LookupUrlsRequest | GetSetupStateRequest | SaveSettingsRequest | ChooseFolderRequest;
 
 // --- Incoming responses (Native Host → Extension) ---
 
@@ -77,6 +105,8 @@ export interface StatusResultResponse {
   type: "status_result";
   ok: boolean;
   version: string;
+  /** Whether AgentMark is set up. Absent from CLIs older than 0.3.0: treat as set up. */
+  initialized?: boolean;
 }
 
 export interface ListCollectionsResultResponse {
@@ -129,12 +159,97 @@ export interface LookupUrlsResultResponse {
   saved: string[];
 }
 
+export type ErrorCode = "setup_required";
+
 export interface ErrorResponse {
   type: "error";
   message: string;
+  /** Machine-readable reason; only `setup_required` exists. Unknown codes are dropped on parse. */
+  code?: ErrorCode;
 }
 
-export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ShowResultResponse | UpdateResultResponse | LookupUrlsResultResponse | ErrorResponse;
+export type AgentId = "claude" | "codex" | "pi";
+
+export interface AgentInfo {
+  id: string;
+  /** Display name; the UI never hardcodes agent names. */
+  name: string;
+  found: boolean;
+  path: string | null;
+}
+
+export interface Settings {
+  storage_path: string;
+  storage_path_display: string;
+  default_agent: string;
+  enrichment_enabled: boolean;
+  system_prompt: string | null;
+  /** User sites only; the built-in rules are in `SetupState.builtin_snapshot_sites`. */
+  snapshot_sites: string[];
+}
+
+export interface SetupState {
+  initialized: boolean;
+  config_problem: string | null;
+  version: string;
+  platform: { os: string; arch: string };
+  settings: Settings;
+  default_storage_path: string;
+  default_storage_path_display: string;
+  agents: AgentInfo[];
+  builtin_snapshot_sites: string[];
+  bookmark_count: number | null;
+}
+
+export interface SetupStateResultResponse {
+  type: "setup_state_result";
+  state: SetupState;
+}
+
+export interface SaveSettingsResultResponse {
+  type: "save_settings_result";
+  state: SetupState;
+}
+
+export type SettingsField = "storage_path" | "default_agent" | "enrichment_enabled" | "system_prompt" | "snapshot_sites";
+
+export type FieldErrorCode =
+  | "blank"
+  | "not_absolute"
+  | "too_long"
+  | "not_a_directory"
+  | "cannot_create"
+  | "not_writable"
+  | "invalid_agent"
+  | "too_many"
+  | "invalid_site";
+
+export interface FieldError {
+  field: SettingsField;
+  /** Only for `snapshot_sites` entries. */
+  index: number | null;
+  /** One of `FieldErrorCode`; a newer CLI may send others, so it is kept as a string. */
+  code: string;
+  /** A sentence for the user, shown as-is. */
+  message: string;
+}
+
+export interface SettingsInvalidResponse {
+  type: "settings_invalid";
+  errors: FieldError[];
+}
+
+export type ChooseFolderOutcome = "chosen" | "cancelled" | "unavailable";
+
+export interface ChooseFolderResultResponse {
+  type: "choose_folder_result";
+  outcome: ChooseFolderOutcome;
+  path: string | null;
+  path_display: string | null;
+  reason: string | null;
+}
+
+export type NativeResponse = SaveResultResponse | StatusResultResponse | ListCollectionsResultResponse | ListResultResponse | ShowResultResponse | UpdateResultResponse | LookupUrlsResultResponse | SetupStateResultResponse | SaveSettingsResultResponse | SettingsInvalidResponse | ChooseFolderResultResponse | ErrorResponse;
 
 // --- Connection status ---
 
@@ -142,7 +257,86 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 
 // --- Runtime parsing helpers ---
 
-const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "show_result", "update_result", "lookup_urls_result", "error"]);
+const RESPONSE_TYPES = new Set(["save_result", "status_result", "list_collections_result", "list_result", "show_result", "update_result", "lookup_urls_result", "setup_state_result", "save_settings_result", "settings_invalid", "choose_folder_result", "error"]);
+
+const SETTINGS_FIELDS = new Set<string>(["storage_path", "default_agent", "enrichment_enabled", "system_prompt", "snapshot_sites"]);
+const FOLDER_OUTCOMES = new Set<string>(["chosen", "cancelled", "unavailable"]);
+
+function isObject(raw: unknown): raw is Record<string, unknown> {
+  return raw !== null && typeof raw === "object" && !Array.isArray(raw);
+}
+
+function isStringArray(raw: unknown): raw is string[] {
+  return Array.isArray(raw) && raw.every((item) => typeof item === "string");
+}
+
+function isNullableString(raw: unknown): raw is string | null {
+  return raw === null || typeof raw === "string";
+}
+
+function parseSettings(raw: unknown, where: string): Settings {
+  if (!isObject(raw)) throw new Error(`${where} missing 'settings' object`);
+  if (typeof raw.storage_path !== "string" || typeof raw.storage_path_display !== "string" ||
+      typeof raw.default_agent !== "string" || typeof raw.enrichment_enabled !== "boolean" ||
+      !isNullableString(raw.system_prompt) || !isStringArray(raw.snapshot_sites)) {
+    throw new Error(`${where} settings has invalid or missing fields`);
+  }
+  return {
+    storage_path: raw.storage_path,
+    storage_path_display: raw.storage_path_display,
+    default_agent: raw.default_agent,
+    enrichment_enabled: raw.enrichment_enabled,
+    system_prompt: raw.system_prompt,
+    snapshot_sites: raw.snapshot_sites,
+  };
+}
+
+function parseAgent(raw: unknown, where: string, i: number): AgentInfo {
+  if (!isObject(raw) || typeof raw.id !== "string" || typeof raw.name !== "string" ||
+      typeof raw.found !== "boolean" || !isNullableString(raw.path)) {
+    throw new Error(`${where} agents[${i}] has invalid or missing fields`);
+  }
+  return { id: raw.id, name: raw.name, found: raw.found, path: raw.path };
+}
+
+function parseSetupState(raw: unknown, where: string): SetupState {
+  if (!isObject(raw)) throw new Error(`${where} missing 'state' object`);
+  const platform = raw.platform;
+  if (typeof raw.initialized !== "boolean" || !isNullableString(raw.config_problem) ||
+      typeof raw.version !== "string" ||
+      !isObject(platform) || typeof platform.os !== "string" || typeof platform.arch !== "string" ||
+      typeof raw.default_storage_path !== "string" || typeof raw.default_storage_path_display !== "string" ||
+      !Array.isArray(raw.agents) || !isStringArray(raw.builtin_snapshot_sites) ||
+      !(raw.bookmark_count === null || (typeof raw.bookmark_count === "number" && Number.isFinite(raw.bookmark_count)))) {
+    throw new Error(`${where} state has invalid or missing fields`);
+  }
+  return {
+    initialized: raw.initialized,
+    config_problem: raw.config_problem,
+    version: raw.version,
+    platform: { os: platform.os, arch: platform.arch },
+    settings: parseSettings(raw.settings, where),
+    default_storage_path: raw.default_storage_path,
+    default_storage_path_display: raw.default_storage_path_display,
+    agents: (raw.agents as unknown[]).map((agent, i) => parseAgent(agent, where, i)),
+    builtin_snapshot_sites: raw.builtin_snapshot_sites,
+    bookmark_count: raw.bookmark_count as number | null,
+  };
+}
+
+function parseFieldError(raw: unknown, i: number): FieldError {
+  if (!isObject(raw) || typeof raw.field !== "string" || !SETTINGS_FIELDS.has(raw.field) ||
+      !(raw.index === null || raw.index === undefined || (Number.isInteger(raw.index) && (raw.index as number) >= 0)) ||
+      typeof raw.code !== "string" || typeof raw.message !== "string") {
+    throw new Error(`settings_invalid errors[${i}] has invalid or missing fields`);
+  }
+  return {
+    field: raw.field as SettingsField,
+    index: (raw.index as number | null | undefined) ?? null,
+    code: raw.code,
+    message: raw.message,
+  };
+}
 
 function parseBookmarkDetail(raw: unknown, responseType: string): BookmarkDetail {
   if (raw === null || raw === undefined || typeof raw !== "object") {
@@ -215,7 +409,12 @@ export function parseNativeResponse(raw: unknown): NativeResponse {
       if (typeof obj.ok !== "boolean" || typeof obj.version !== "string") {
         throw new Error("status_result missing required fields (ok, version)");
       }
-      return { type: "status_result", ok: obj.ok, version: obj.version };
+      if (obj.initialized !== undefined && typeof obj.initialized !== "boolean") {
+        throw new Error("status_result has a non-boolean 'initialized'");
+      }
+      const status: StatusResultResponse = { type: "status_result", ok: obj.ok, version: obj.version };
+      if (obj.initialized !== undefined) status.initialized = obj.initialized;
+      return status;
     }
     case "list_collections_result": {
       if (!Array.isArray(obj.collections)) {
@@ -275,7 +474,38 @@ export function parseNativeResponse(raw: unknown): NativeResponse {
       if (typeof obj.message !== "string") {
         throw new Error("error response missing 'message' field");
       }
-      return { type: "error", message: obj.message };
+      const error: ErrorResponse = { type: "error", message: obj.message };
+      if (obj.code === "setup_required") error.code = obj.code;
+      return error;
+    }
+    case "setup_state_result":
+    case "save_settings_result": {
+      const state = parseSetupState(obj.state, obj.type);
+      return { type: obj.type, state } as SetupStateResultResponse | SaveSettingsResultResponse;
+    }
+    case "settings_invalid": {
+      if (!Array.isArray(obj.errors) || obj.errors.length === 0) {
+        throw new Error("settings_invalid missing non-empty 'errors' array");
+      }
+      return { type: "settings_invalid", errors: obj.errors.map(parseFieldError) };
+    }
+    case "choose_folder_result": {
+      if (typeof obj.outcome !== "string" || !FOLDER_OUTCOMES.has(obj.outcome) ||
+          !isNullableString(obj.path ?? null) || !isNullableString(obj.path_display ?? null) ||
+          !isNullableString(obj.reason ?? null)) {
+        throw new Error("choose_folder_result has invalid or missing fields");
+      }
+      if (obj.outcome === "chosen" && (typeof obj.path !== "string" || obj.path === "")) {
+        throw new Error("choose_folder_result chosen without a path");
+      }
+      const path = (obj.path as string | null | undefined) ?? null;
+      return {
+        type: "choose_folder_result",
+        outcome: obj.outcome as ChooseFolderOutcome,
+        path,
+        path_display: (obj.path_display as string | null | undefined) ?? path,
+        reason: (obj.reason as string | null | undefined) ?? null,
+      };
     }
     default:
       throw new Error(`Unknown native response type: ${obj.type}`);
@@ -334,6 +564,26 @@ export interface RuntimeStatusMessage {
   type: "status";
 }
 
+export interface RuntimeGetSetupStateMessage {
+  type: "get_setup_state";
+}
+
+export interface RuntimeSaveSettingsMessage {
+  type: "save_settings";
+  settings: SettingsChanges;
+}
+
+export interface RuntimeChooseFolderMessage {
+  type: "choose_folder";
+  start_path?: string;
+}
+
+/** Sent by the posts content script: "this tab shows this page" (contract §3.3). */
+export interface RuntimeReportPageMessage {
+  type: "report_page";
+  url: string;
+}
+
 export interface RuntimeListCollectionsMessage {
   type: "list_collections";
 }
@@ -361,7 +611,7 @@ export interface RuntimeLookupUrlsMessage {
   urls: string[];
 }
 
-export type RuntimeMessage = RuntimeSaveMessage | RuntimeOpenSavePopupMessage | RuntimeTakePendingSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage | RuntimeShowMessage | RuntimeUpdateMessage | RuntimeLookupUrlsMessage;
+export type RuntimeMessage = RuntimeSaveMessage | RuntimeOpenSavePopupMessage | RuntimeTakePendingSaveMessage | RuntimeStatusMessage | RuntimeListCollectionsMessage | RuntimeListMessage | RuntimeShowMessage | RuntimeUpdateMessage | RuntimeLookupUrlsMessage | RuntimeGetSetupStateMessage | RuntimeSaveSettingsMessage | RuntimeChooseFolderMessage | RuntimeReportPageMessage;
 
 export interface RuntimeSuccessResponse {
   success: true;
@@ -371,6 +621,8 @@ export interface RuntimeSuccessResponse {
 export interface RuntimeErrorResponse {
   success: false;
   error: string;
+  /** Copied from the native `error.code`. */
+  code?: ErrorCode;
 }
 
 export type RuntimeResponse = RuntimeSuccessResponse | RuntimeErrorResponse;

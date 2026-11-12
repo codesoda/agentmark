@@ -67,7 +67,7 @@ export function CopyCommand({
         <span className="select-none font-mono text-subtle" aria-hidden>
           $
         </span>
-        <code ref={codeRef} className={"font-mono text-ink " + (wrap ? "leading-relaxed" : "whitespace-nowrap pr-8")}>
+        <code ref={codeRef} className={"font-mono text-ink " + (wrap ? "min-w-0 flex-1 leading-relaxed" : "whitespace-nowrap pr-8")}>
           {wrap ? withBreaks(command) : command}
         </code>
       </div>
@@ -87,17 +87,29 @@ export function CopyCommand({
   );
 }
 
-/** Inserts soft break opportunities after each "/" so URLs wrap at path boundaries. */
+/**
+ * Lines break after each "/" and at spaces, like the extension's command
+ * block, never at a hyphen inside a flag such as `--extension-id`. Only a
+ * piece too long to keep whole may break inside.
+ */
 function withBreaks(command: string) {
-  const parts = command.split("/");
-  return parts.map((part, i) => (
+  const pieces = command.match(/[^/\s]*(?:\/+|\s+|$)/g)?.filter((piece) => piece !== "") ?? [command];
+  return pieces.map((piece, i) => (
     <span key={i}>
-      {part}
-      {i < parts.length - 1 ? (
-        <>
-          /<wbr />
-        </>
-      ) : null}
+      {i > 0 ? <wbr /> : null}
+      {piece.length <= 20 ? (
+        <span className="whitespace-nowrap">{piece}</span>
+      ) : (
+        // A long host name may also break after a dot, and anywhere as a last resort.
+        <span className="[overflow-wrap:anywhere]">
+          {piece.split(/(?<=\.)/).map((part, j) => (
+            <span key={j}>
+              {j > 0 ? <wbr /> : null}
+              {part}
+            </span>
+          ))}
+        </span>
+      )}
     </span>
   ));
 }

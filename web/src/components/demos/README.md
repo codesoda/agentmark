@@ -1,6 +1,6 @@
 # Demos
 
-Five demo slots, each a default-exported client component with no props. The page renders them as-is; build a demo by replacing the file's body, not by editing the page.
+Six demo slots, each a default-exported client component with no props. The page renders them as-is; build a demo by replacing the file's body, not by editing the page.
 
 | File | Story | Root size (keep it) | Column width |
 | --- | --- | --- | --- |
@@ -9,6 +9,7 @@ Five demo slots, each a default-exported client component with no props. The pag
 | `bundle-viewer-demo.tsx` | One bundle's file tree, preview each file | `h-[460px] sm:h-[480px]` | same |
 | `terminal-demo.tsx` | `agentmark search` then `agentmark show`, or an agent using the skill | `h-[460px] sm:h-[480px]` | same |
 | `sidepanel-demo.tsx` | Side panel: summary and suggested tags arrive after the save | `h-[460px] sm:h-[500px]` | same |
+| `first-run-demo.tsx` | First click: app not found (this computer first), install command, Terminal, setup (folder, agent, summaries), saved. Step buttons under the frame | `h-[500px] sm:h-[560px]` | same |
 
 Narrowest layout is 360px viewport, so the demo gets about 320px. Test there.
 
@@ -55,4 +56,5 @@ Tailwind utilities map to CSS variables in `src/app/globals.css`. Use these, nev
 - Reduced motion: show the final state, no looping, no movement. Start animating only when `inView` is true and stop when it is false.
 - Keyboard: anything clickable is a real `button` with a visible focus ring. A demo that loops needs a pause control or must stop after one run.
 - Accessible: give the frame a `label` describing what the demo shows, or mark decorative motion `aria-hidden` and keep a text equivalent.
+- `first-run-demo.tsx` replicates the extension's own screens (`AppMissing.tsx`, `SetupForm.tsx`, `settings-controls.tsx`, `CopyCommand.tsx`). Keep its wording identical to theirs, and its install method in step with `src/lib/platforms.ts`.
 - Content stays generic: no third-party logos, layouts that copy a real site, or real people. Formats (IDs, list rows, `show` output, bundle files) must match the real CLI.

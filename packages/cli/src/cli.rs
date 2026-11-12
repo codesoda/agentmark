@@ -11,7 +11,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize AgentMark configuration and storage
-    Init,
+    Init(InitArgs),
 
     /// Save a URL as a bookmark with optional metadata
     Save(SaveArgs),
@@ -41,7 +41,7 @@ pub enum Commands {
     Delete(DeleteArgs),
 
     /// Run the native messaging host for the browser extension
-    NativeHost,
+    NativeHost(NativeHostArgs),
 
     /// Extract the embedded Chrome extension and register the native messaging host
     InstallExtension(InstallExtensionArgs),
@@ -52,6 +52,40 @@ pub enum Commands {
     /// Run deferred model work for a saved bookmark (started by the native host)
     #[command(hide = true)]
     PostProcess(PostProcessArgs),
+}
+
+/// Any of these flags makes `init` non-interactive; omitted values keep the
+/// current setting (or the default before setup).
+#[derive(clap::Args, Default)]
+pub struct InitArgs {
+    /// Folder for bookmarks (default ~/Documents/AgentMark)
+    #[arg(long, value_name = "PATH")]
+    pub storage_path: Option<String>,
+
+    /// Agent that writes summaries: claude, codex or pi
+    #[arg(long, value_name = "NAME")]
+    pub agent: Option<String>,
+
+    /// Write a summary and tags after each save
+    #[arg(long, value_name = "on|off", value_parser = ["on", "off"])]
+    pub summaries: Option<String>,
+
+    /// Do not prompt; use defaults for anything not given
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+impl InitArgs {
+    /// True when any flag was given, so `init` runs without prompts.
+    pub fn is_non_interactive(&self) -> bool {
+        self.yes || self.storage_path.is_some() || self.agent.is_some() || self.summaries.is_some()
+    }
+}
+
+#[derive(clap::Args)]
+pub struct NativeHostArgs {
+    /// Caller origin (`chrome-extension://<id>/`), as Chrome passes it
+    pub origin: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -185,7 +219,7 @@ pub struct DeleteArgs {
 
 #[derive(clap::Args)]
 pub struct InstallExtensionArgs {
-    /// Chrome extension ID for native host registration (32 lowercase letters)
+    /// Chrome extension ID for native host registration (32 letters from a to p)
     #[arg(long)]
     pub extension_id: Option<String>,
 

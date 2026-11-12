@@ -371,7 +371,7 @@ fn show_missing_bookmark_fails() {
 }
 
 #[test]
-fn show_missing_bundle_fails_with_drift_error() {
+fn show_missing_bundle_names_the_folder_it_searched() {
     let env = TestEnv::new();
     let bm = make_bookmark("am_01AAA", "https://a.com", "Drifted", 1);
 
@@ -385,8 +385,9 @@ fn show_missing_bundle_fails_with_drift_error() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("drift") || stderr.contains("not found"),
-        "should mention drift or not found: {stderr}"
+        stderr.contains("are not in the storage folder")
+            && stderr.contains("folder AgentMark used before"),
+        "should explain the missing files: {stderr}"
     );
 }
 

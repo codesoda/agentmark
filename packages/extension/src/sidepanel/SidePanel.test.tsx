@@ -9,6 +9,10 @@ vi.mock("../shared/runtime", () => ({
   sendListCollectionsMessage: vi.fn(),
   sendShowBookmarkMessage: vi.fn(),
   sendUpdateBookmarkMessage: vi.fn(),
+  sendStatus: vi.fn(),
+  sendGetSetupState: vi.fn(),
+  sendSaveSettings: vi.fn(),
+  sendChooseFolder: vi.fn(),
 }));
 
 import SidePanel from "./SidePanel";
@@ -17,7 +21,9 @@ import {
   sendListCollectionsMessage,
   sendShowBookmarkMessage,
   sendUpdateBookmarkMessage,
+  sendStatus,
 } from "../shared/runtime";
+import { statusReady } from "../test/fixtures";
 
 function makeBookmark(id: string, overrides: Partial<BookmarkSummary> = {}): BookmarkSummary {
   return {
@@ -54,6 +60,7 @@ describe("SidePanel", () => {
   beforeEach(() => {
     resetChromeMock();
     vi.clearAllMocks();
+    vi.mocked(sendStatus).mockResolvedValue(statusReady);
   });
 
   it("shows loading state initially", async () => {
@@ -62,7 +69,10 @@ describe("SidePanel", () => {
       new Promise((resolve) => { resolveList = resolve; }),
     );
 
-    render(<SidePanel />);
+    // The status probe settles first; then the list loads.
+    await act(async () => {
+      render(<SidePanel />);
+    });
     expect(screen.getByTestId("loading-state")).toBeDefined();
 
     await act(async () => resolveList({ bookmarks: [] }));
@@ -76,6 +86,7 @@ describe("SidePanel", () => {
     render(<SidePanel />);
     expect(await screen.findByTestId("bookmark-card-1")).toBeDefined();
     expect(screen.getByTestId("bookmark-card-2")).toBeDefined();
+    expect(document.querySelectorAll("header svg[data-look='saved']")).toHaveLength(1);
   });
 
   it("shows empty state when no bookmarks", async () => {
@@ -90,12 +101,12 @@ describe("SidePanel", () => {
   it("shows error state on failure", async () => {
     vi.mocked(sendListBookmarksMessage).mockResolvedValue({
       bookmarks: [],
-      error: "not initialized: config not found",
+      error: "database is locked",
     });
 
     render(<SidePanel />);
     expect(await screen.findByTestId("error-state")).toBeDefined();
-    expect(screen.getByTestId("error-state").textContent).toContain("not initialized");
+    expect(screen.getByTestId("error-state").textContent).toContain("database is locked");
   });
 
   it("shows the install prompt instead of the list when the app is not installed", async () => {
@@ -107,11 +118,14 @@ describe("SidePanel", () => {
     render(<SidePanel />);
     const prompt = await screen.findByTestId("install-prompt");
     expect(prompt.getAttribute("data-problem")).toBe("not_installed");
-    expect(screen.getByText("Install the AgentMark app")).toBeDefined();
+    expect(screen.getByText("Finish setting up AgentMark")).toBeDefined();
     expect(screen.queryByTestId("error-state")).toBeNull();
+    // The screen draws the mark beside its title; the header does not repeat it.
+    expect(document.querySelectorAll("svg[data-look]")).toHaveLength(1);
+    expect(document.querySelector("header svg[data-look]")).toBeNull();
   });
 
-  it("reloads the list from Try again", async () => {
+  it("reloads the list from Check again", async () => {
     vi.mocked(sendListBookmarksMessage).mockResolvedValueOnce({
       bookmarks: [],
       error: "Specified native messaging host not found.",
@@ -124,7 +138,7 @@ describe("SidePanel", () => {
     await screen.findByTestId("install-prompt");
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     });
 
     expect(sendListBookmarksMessage).toHaveBeenCalledTimes(2);
@@ -294,7 +308,7 @@ describe("SidePanel", () => {
     expect(screen.getByTestId("back-to-list")).toBeDefined();
   });
 
-  it("retries the detail load from Try again", async () => {
+  it("retries the detail load from Check again", async () => {
     vi.mocked(sendListBookmarksMessage).mockResolvedValue({
       bookmarks: [makeBookmark("am_retry")],
     });
@@ -315,7 +329,7 @@ describe("SidePanel", () => {
     await screen.findByTestId("install-prompt");
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     });
 
     expect(sendShowBookmarkMessage).toHaveBeenCalledTimes(2);
@@ -466,7 +480,9 @@ describe("SidePanel", () => {
       () => new Promise((resolve) => { pendingResolvers.push(resolve); }),
     );
 
-    render(<SidePanel />);
+    await act(async () => {
+      render(<SidePanel />);
+    });
 
     // Wait for initial mount call(s) — resolve them to get past loading
     await act(async () => {

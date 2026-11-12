@@ -2,7 +2,7 @@
 
 Agent-first bookmarking for local AI workflows. Save web pages into structured, durable content bundles on your local filesystem — immediately useful to you, Claude Code, Codex, and other local agent tools.
 
-Website: https://agentmark.vercel.app
+Website: https://agentmark.app
 
 ## Install
 
@@ -84,11 +84,11 @@ Press **Cmd+Shift+S** (Mac) or **Ctrl+Shift+S** to save the current page. The po
 
 If you select text on the page before saving, it's captured alongside the bookmark.
 
-The extension also sends the page as your browser shows it. AgentMark uses that copy for sites that only render for a logged-in browser (LinkedIn, X, Hacker News discussions, plus any `snapshot_sites` in your config), and whenever its own fetch is blocked (for example, LinkedIn's HTTP 999).
+The extension also sends the page as your browser shows it. AgentMark uses that copy for sites that only render for a logged-in browser (LinkedIn, X, Hacker News discussions, Reddit, plus any `snapshot_sites` in your config), and whenever its own fetch is blocked (for example, LinkedIn's HTTP 999).
 
 ### In-page save buttons
 
-On LinkedIn, X, and Hacker News, each post gets its own save button. The buttons and the toolbar icon show when a page or post is already saved.
+On LinkedIn, X, Hacker News and Reddit, each post gets its own save button. The buttons and the toolbar icon show when a page or post is already saved.
 
 ### Side Panel
 

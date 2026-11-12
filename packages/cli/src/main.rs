@@ -9,12 +9,12 @@ use clap::Parser;
 fn main() {
     // Chrome invokes native messaging hosts with a single arg: the extension
     // origin (e.g. "chrome-extension://abc.../"). Rewrite args so clap sees
-    // the `native-host` subcommand instead.
+    // the `native-host` subcommand, keeping the origin for the liveness file.
     let args: Vec<String> = std::env::args().collect();
     let use_native_host = args.len() == 2 && args[1].starts_with("chrome-extension://");
 
     let cli = if use_native_host {
-        Cli::parse_from([&args[0], "native-host"])
+        Cli::parse_from([&args[0], "native-host", &args[1]])
     } else {
         Cli::parse()
     };

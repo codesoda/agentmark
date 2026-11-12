@@ -131,6 +131,27 @@ function FileTree({
     }
   }, [selected]);
 
+  // Below sm the file list is a sideways strip. Fade whichever edge has more
+  // files past it, so a phone visitor can tell the strip scrolls.
+  const [more, setMore] = useState({ before: false, after: false });
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const measure = () => {
+      const max = list.scrollWidth - list.clientWidth;
+      const next = { before: max > 1 && list.scrollLeft > 1, after: max > 1 && list.scrollLeft < max - 1 };
+      setMore((prev) => (prev.before === next.before && prev.after === next.after ? prev : next));
+    };
+    measure();
+    list.addEventListener("scroll", measure, { passive: true });
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(list);
+    return () => {
+      list.removeEventListener("scroll", measure);
+      ro?.disconnect();
+    };
+  }, []);
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
     const index = tabs.findIndex((t) => t === document.activeElement);
@@ -161,38 +182,61 @@ function FileTree({
         ))}
         <Folder name={BUNDLE_DIR} open current className="sm:pl-3.5" />
       </div>
-      <div
-        ref={listRef}
-        role="tablist"
-        aria-label="Files in the bundle"
-        onKeyDown={onKeyDown}
-        className="flex gap-1 overflow-x-auto px-2 pt-1.5 pb-2.5 [scrollbar-width:none] sm:flex-col sm:gap-px sm:overflow-visible sm:pt-0.5 sm:pl-[2.6rem]"
-      >
-        {BUNDLE.map((file) => {
-          const isSelected = file.name === selected;
-          return (
-            <button
-              key={file.name}
-              type="button"
-              role="tab"
-              id={tabId(file.name)}
-              aria-selected={isSelected}
-              aria-controls="bundle-file-panel"
-              tabIndex={isSelected ? 0 : -1}
-              onClick={() => onOpen(file.name)}
-              className={cx(
-                "flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left font-mono text-[11.5px] whitespace-nowrap transition-colors duration-150 motion-reduce:transition-none sm:py-[5px]",
-                isSelected
-                  ? "bg-accent-soft text-accent"
-                  : "text-muted hover:bg-sunken hover:text-ink",
-              )}
-            >
-              <FileGlyph />
-              {file.name}
-            </button>
-          );
-        })}
+      <div className="relative">
+        <div
+          ref={listRef}
+          role="tablist"
+          aria-label="Files in the bundle"
+          onKeyDown={onKeyDown}
+          className="flex gap-1 overflow-x-auto px-2 pt-1.5 pb-2.5 [scrollbar-width:none] sm:flex-col sm:gap-px sm:overflow-visible sm:pt-0.5 sm:pl-[2.6rem]"
+        >
+          {BUNDLE.map((file) => {
+            const isSelected = file.name === selected;
+            return (
+              <button
+                key={file.name}
+                type="button"
+                role="tab"
+                id={tabId(file.name)}
+                aria-selected={isSelected}
+                aria-controls="bundle-file-panel"
+                tabIndex={isSelected ? 0 : -1}
+                onClick={() => onOpen(file.name)}
+                className={cx(
+                  "flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-left font-mono text-[11.5px] whitespace-nowrap transition-colors duration-150 motion-reduce:transition-none sm:py-[5px]",
+                  isSelected
+                    ? "bg-accent-soft text-accent"
+                    : "text-muted hover:bg-sunken hover:text-ink",
+                )}
+              >
+                <FileGlyph />
+                {file.name}
+              </button>
+            );
+          })}
+        </div>
+        <EdgeFade side="left" show={more.before} />
+        <EdgeFade side="right" show={more.after} />
       </div>
+    </div>
+  );
+}
+
+/** A soft edge on the phone file strip, with a chevron, shown while files sit past that edge. */
+function EdgeFade({ side, show }: { side: "left" | "right"; show: boolean }) {
+  const right = side === "right";
+  return (
+    <div
+      aria-hidden
+      className={cx(
+        "pointer-events-none absolute inset-y-0 flex w-10 items-center from-raised from-35% to-transparent transition-opacity duration-200 motion-reduce:transition-none sm:hidden",
+        right ? "right-0 justify-end bg-linear-to-l pr-1" : "left-0 justify-start bg-linear-to-r pl-1",
+        show ? "opacity-100" : "opacity-0",
+      )}
+    >
+      <svg viewBox="0 0 16 16" className={cx("size-3 text-subtle", !right && "rotate-180")} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m6 4 4 4-4 4" />
+      </svg>
     </div>
   );
 }
