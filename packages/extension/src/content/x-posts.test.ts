@@ -78,7 +78,7 @@ describe("X post save button", () => {
     const bar = document.querySelector('#tweet [role="group"]')!;
     expect(bar.lastElementChild).toBe(button);
     expect(button.querySelector("svg")?.getAttribute("data-look")).toBe("idle");
-    expect(button.querySelector('[data-part="plus"]')).not.toBeNull();
+    expect(button.querySelector('[data-part="outline"]')).not.toBeNull();
     expect(button.style.color).toBe("rgb(113, 118, 123)");
     // Centred in the action bar whatever its height (it is taller on a post's own page).
     expect(button.style.alignSelf).toBe("center");

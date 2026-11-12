@@ -71,7 +71,7 @@ describe("already-saved lookup", () => {
     expectPlainSaved(buttonFor(2));
     for (const id of [1, 3]) {
       expect(buttonFor(id).dataset.state).toBe("idle");
-      expect(buttonFor(id).querySelector('[data-part="plus"]')).not.toBeNull();
+      expect(buttonFor(id).querySelector('[data-part="outline"]')).not.toBeNull();
     }
   });
 

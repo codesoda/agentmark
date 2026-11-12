@@ -106,7 +106,6 @@ const OUTLINE =
 const GLYPH_STROKE = 'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"';
 export const PLUS_PATH = "M12 8.86V11.56M10.65 10.21H13.35";
 export const TICK_PATH = "M10.4 10.31L11.55 11.41L13.7 9.06";
-const PLUS = `<path data-part="plus" ${GLYPH_STROKE} d="${PLUS_PATH}"/>`;
 const TICK = `<path data-part="tick" ${GLYPH_STROKE} d="${TICK_PATH}"/>`;
 const BANG =
   `<path data-part="bang" ${GLYPH_STROKE} d="M12 8.61V10.56"/>` +
@@ -115,8 +114,9 @@ const BANG =
 type IconLook = ButtonState | "saved-fresh";
 
 const ICON_BODY: Record<IconLook, string> = {
-  idle: SOLID + PLUS,
-  // Hollow while the save is in flight; it fills in once the bookmark exists.
+  // Hollow until the bookmark exists: grey at rest, light blue while the save
+  // is in flight, then it fills in. Outline to solid reads as progress.
+  idle: OUTLINE,
   saving: OUTLINE,
   "saved-fresh": SOLID + TICK,
   saved: SOLID,

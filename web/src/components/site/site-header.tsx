@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { AgentMarkMark } from "@/components/demos/kit";
 import { REPO_URL } from "@/lib/site";
 import { Container } from "./section";
 import { GitHubIcon } from "./icons";
+import { HeaderBrand } from "./header-brand";
 
 const LINKS = [
   { href: "/#capture", label: "Capture" },
@@ -16,10 +16,7 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-bg">
       <Container className="flex h-15 items-center gap-6">
-        <Link href="/#top" className="flex items-center gap-2.5 rounded-md text-[15px] font-semibold tracking-tight text-ink">
-          <AgentMarkMark look="brand" size={22} />
-          AgentMark
-        </Link>
+        <HeaderBrand />
         <nav aria-label="Sections" className="ml-auto hidden md:block">
           <ul className="flex items-center gap-1">
             {LINKS.map((l) => (

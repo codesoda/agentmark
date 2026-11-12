@@ -105,11 +105,14 @@ describe("AgentMark mark", () => {
     expect(MARK_BADGE_PATH).toBe(BADGE);
     expect(MARK_BOOKMARK_PATH).toBe(BOOKMARK);
     expect(MARK_PLUS_PATH).toBe(PLUS_PATH);
+    expect(readFileSync(resolve(__dirname, "../../icons/toolbar-saved.svg"), "utf-8")).toContain(MARK_BADGE_PATH);
     const idleSvg = readFileSync(resolve(__dirname, "../../icons/toolbar-idle.svg"), "utf-8");
-    expect(idleSvg).toContain(MARK_BADGE_PATH);
+    // Idle is the grey outline: hollow until a bookmark exists, like the in-page badge.
     expect(idleSvg).toContain(MARK_BOOKMARK_PATH);
-    expect(idleSvg).toContain(MARK_PLUS_PATH);
+    expect(idleSvg).toContain('stroke="#6b7280"');
     expect(idleSvg).toContain('fill="#6b7280"');
+    expect(idleSvg).not.toContain(MARK_PLUS_PATH);
+    expect(readFileSync(resolve(__dirname, "../../icons/icon.svg"), "utf-8")).toContain(MARK_PLUS_PATH);
     expect(readFileSync(resolve(__dirname, "../../icons/toolbar-saved.svg"), "utf-8")).toContain('fill="#4f46e5"');
   });
 });

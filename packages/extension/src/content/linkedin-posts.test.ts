@@ -95,9 +95,9 @@ describe("LinkedIn post save button", () => {
     expect(button.getAttribute("aria-label")).toBe("Save to AgentMark");
     // Level with the post menu at the top of the header, not centred in it.
     expect(button.style.alignSelf).toBe("flex-start");
-    // The AgentMark badge with its plus, not a bare bookmark glyph like LinkedIn's own Save.
-    expect(button.querySelector('[data-part="badge"]')).not.toBeNull();
-    expect(button.querySelector('[data-part="plus"]')).not.toBeNull();
+    // The outlined AgentMark badge, not a bare bookmark glyph like LinkedIn's own Save.
+    expect(button.querySelector('[data-part="outline"]')).not.toBeNull();
+    expect(button.querySelector('[data-part="badge"]')).toBeNull();
     expect(document.querySelector(`#ad ${SAVE_BUTTON}`)).toBeNull();
   });
 
@@ -160,7 +160,7 @@ describe("LinkedIn post save button", () => {
 
     button.click();
     expect(button.dataset.state).toBe("saving");
-    // Hollow, light blue and without the plus while the save is in flight.
+    // Still hollow, now light blue, while the save is in flight.
     expect(button.querySelector('[data-part="outline"]')).not.toBeNull();
     expect(button.querySelector('[data-part="plus"]')).toBeNull();
     // LinkedIn is white: the default, stronger indigo.

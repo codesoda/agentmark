@@ -69,7 +69,7 @@ const PLATFORM_INFO = { os: "mac", arch: "arm64" };
  */
 const COMMAND = cliCommand();
 
-const APP_VERSION = "0.3.0";
+const APP_VERSION = "0.3.1";
 const FOLDER = "~/Documents/AgentMark";
 const AGENTS = [
   { id: "claude", name: "Claude Code", found: true },
@@ -316,7 +316,7 @@ function Popup({ open, more, children }: { open: boolean; more: boolean; childre
 function Heading({ children }: { children: ReactNode }) {
   return (
     <div className="flex items-center gap-2">
-      <AgentMarkMark look="idle" size={18} />
+      <AgentMarkMark look="idle-solid" size={18} />
       <p className="text-[14.5px] font-semibold tracking-tight text-ink">{children}</p>
     </div>
   );
