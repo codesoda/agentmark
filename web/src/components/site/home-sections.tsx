@@ -11,6 +11,7 @@ import { INSTALL_LINKS, cliCommand } from "@/lib/platforms";
 import { REPO_URL } from "@/lib/site";
 import { CopyCommand } from "./copy-command";
 import { BUTTON_OUTLINE, BUTTON_SOLID, DownloadGlyph, ExtensionGlyph } from "./install-section";
+import { HeroCollection } from "./hero-collection";
 import { ArrowIcon, GitHubIcon } from "./icons";
 import { Code, Container, Eyebrow, Facts, Feature, H2, Lead, Section } from "./section";
 
@@ -20,21 +21,30 @@ export function Hero() {
   return (
     <section id="top" aria-labelledby="hero-title" className="pt-14 pb-20 sm:pt-20 sm:pb-28">
       <Container>
-        <p className="font-mono text-[12px] uppercase tracking-[0.14em] text-subtle">
-          Chrome extension · CLI · Agent skill
-        </p>
-        <h1
-          id="hero-title"
-          className="mt-5 max-w-[62rem] text-balance text-[2.75rem] font-semibold leading-[1.0] tracking-[-0.04em] text-ink sm:text-[4rem] lg:text-[5rem]"
-        >
-          Bookmarks your agent can actually read.
-        </h1>
-        <div className="mt-10 grid gap-14 xl:mt-14 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] xl:gap-14">
-          <div className="min-w-0 xl:pt-1">
-            <p className="max-w-[34rem] text-pretty text-[18px] leading-relaxed text-muted sm:text-[20px]">
-              AgentMark saves each page as plain files on your own machine and indexes them for search. Claude Code and
-              Codex find them and read them back when you ask.
+        <div className="grid items-center gap-14 lg:grid-cols-[minmax(0,6fr)_minmax(0,5fr)] lg:gap-12">
+          <div className="min-w-0">
+            <p className="font-mono text-[12px] font-semibold uppercase tracking-[0.16em] text-accent">
+              Bookmarks you and your agent can use
             </p>
+            <h1
+              id="hero-title"
+              className="mt-5 text-[2.75rem] font-semibold leading-[1.02] tracking-[-0.045em] text-ink sm:text-[3.5rem] xl:text-[3.75rem]"
+            >
+              Save it now.
+              <br />
+              Ask your agent later.
+            </h1>
+            <p className="mt-6 max-w-[34rem] text-pretty text-[18px] leading-relaxed text-muted sm:text-[20px]">
+              Keep the pages, posts, and videos you want to come back to. Searchable by you, Claude Code, Codex,
+              ChatGPT, and Microsoft Copilot.
+            </p>
+            <ul aria-label="Works with" className="mt-7 flex flex-wrap gap-2">
+              {["Claude Code", "Codex", "Pi", "ChatGPT", "Microsoft Copilot"].map((agent) => (
+                <li key={agent} className="rounded-full border border-line-strong px-3.5 py-1.5 text-[14px] text-ink">
+                  {agent}
+                </li>
+              ))}
+            </ul>
             {INSTALL_LINKS.webStore || INSTALL_LINKS.macApp ? (
               <div className="mt-9 flex flex-wrap items-center gap-x-3 gap-y-3">
                 {INSTALL_LINKS.webStore ? (
@@ -82,9 +92,12 @@ export function Hero() {
               Needs Google Chrome. Setup happens in Chrome, not in a terminal.
             </p>
           </div>
-          <div className="min-w-0">
-            <HeroSaveDemo />
+          <div className="flex min-w-0 justify-center lg:justify-end">
+            <HeroCollection />
           </div>
+        </div>
+        <div className="mx-auto mt-20 max-w-[60rem] sm:mt-24">
+          <HeroSaveDemo />
         </div>
       </Container>
     </section>
