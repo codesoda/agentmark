@@ -85,7 +85,7 @@ export const linkedinAdapter: SiteAdapter = {
 };
 
 /** Serialize one post, with the comments shown under it, as a standalone page. */
-export function buildPostSnapshot(post: Element, title: string): string {
+export function buildPostSnapshot(post: Element, title: string): string | undefined {
   return buildSnapshot(post, title, linkedinAdapter);
 }
 

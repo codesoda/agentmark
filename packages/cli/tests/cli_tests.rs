@@ -393,15 +393,62 @@ fn collections_parses() {
 #[test]
 fn native_host_parses() {
     let cli = Cli::try_parse_from(["agentmark", "native-host"]).unwrap();
-    assert!(matches!(cli.command, cli::Commands::NativeHost));
+    assert!(matches!(
+        cli.command,
+        cli::Commands::NativeHost(cli::NativeHostArgs { origin: None })
+    ));
 }
 
-// ── Init (no args) ─────────────────────────────────────────────────
+#[test]
+fn native_host_parses_chrome_origin() {
+    let origin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/";
+    let cli = Cli::try_parse_from(["agentmark", "native-host", origin]).unwrap();
+    match cli.command {
+        cli::Commands::NativeHost(args) => assert_eq!(args.origin.as_deref(), Some(origin)),
+        _ => panic!("expected NativeHost"),
+    }
+}
+
+// ── Init ───────────────────────────────────────────────────────────
 
 #[test]
 fn init_parses() {
     let cli = Cli::try_parse_from(["agentmark", "init"]).unwrap();
-    assert!(matches!(cli.command, cli::Commands::Init));
+    match cli.command {
+        cli::Commands::Init(args) => assert!(!args.is_non_interactive()),
+        _ => panic!("expected Init"),
+    }
+}
+
+#[test]
+fn init_parses_non_interactive_flags() {
+    let cli = Cli::try_parse_from([
+        "agentmark",
+        "init",
+        "--storage-path",
+        "~/Marks",
+        "--agent",
+        "codex",
+        "--summaries",
+        "off",
+    ])
+    .unwrap();
+    match cli.command {
+        cli::Commands::Init(args) => {
+            assert!(args.is_non_interactive());
+            assert_eq!(args.storage_path.as_deref(), Some("~/Marks"));
+            assert_eq!(args.agent.as_deref(), Some("codex"));
+            assert_eq!(args.summaries.as_deref(), Some("off"));
+        }
+        _ => panic!("expected Init"),
+    }
+    let cli = Cli::try_parse_from(["agentmark", "init", "--yes"]).unwrap();
+    assert!(matches!(cli.command, cli::Commands::Init(a) if a.is_non_interactive()));
+}
+
+#[test]
+fn init_rejects_bad_summaries_value() {
+    assert!(Cli::try_parse_from(["agentmark", "init", "--summaries", "maybe"]).is_err());
 }
 
 // ── No subcommand shows help ────────────────────────────────────────
@@ -438,4 +485,21 @@ fn cli_and_extension_versions_match() {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// The desktop app bundles this CLI and shares its version (AGENTS.md, Versioning).
+#[test]
+fn cli_and_desktop_app_versions_match() {
+    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../app");
+    let json = |rel: &str| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(app.join(rel)).unwrap()).unwrap()
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(json("src-tauri/tauri.conf.json")["version"], version);
+    assert_eq!(json("package.json")["version"], version);
+    let lock = json("package-lock.json");
+    assert_eq!(lock["version"], version);
+    assert_eq!(lock["packages"][""]["version"], version);
+    let cargo = std::fs::read_to_string(app.join("src-tauri/Cargo.toml")).unwrap();
+    assert!(cargo.contains(&format!("\nversion = \"{version}\"\n")));
 }

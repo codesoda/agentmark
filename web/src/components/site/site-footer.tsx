@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { AgentMarkMark } from "@/components/demos/kit";
 import { REPO_URL } from "@/lib/site";
 import { Container } from "./section";
@@ -26,6 +27,11 @@ export function SiteFooter() {
               <a href={`${REPO_URL}/issues`} className="text-muted hover:text-ink">
                 Issues
               </a>
+            </li>
+            <li>
+              <Link href="/privacy" className="text-muted hover:text-ink">
+                Privacy policy
+              </Link>
             </li>
             <li>
               <a href="/llms.txt" className="text-muted hover:text-ink">

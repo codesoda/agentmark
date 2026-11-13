@@ -12,6 +12,7 @@
  * Content scripts must never click or navigate the host page.
  */
 
+import { removePrivateElements } from "./private-content";
 import { cachedSaved, lookupSavedUrls, rememberSaved } from "./saved-lookup";
 
 export { resetSavedCache } from "./saved-lookup";
@@ -37,11 +38,18 @@ export interface SiteAdapter {
    */
   alignWith?(post: Element): Element | null;
   /**
-   * Where to put the button: inserted into `parent` before `before`, or
-   * appended when `before` is null. Return null for things that are not
-   * saveable posts (ads, placeholders).
+   * Posts nest inside each other (comment threads). A post then counts as
+   * having a button only when the button's nearest post is that post, not a
+   * reply inside it.
    */
-  findSlot(post: Element): { parent: Element; before: Element | null } | null;
+  nested?: boolean;
+  /**
+   * Where to put the button: inserted into `parent` before `before`, or
+   * appended when `before` is null. `slot` names the shadow-DOM slot of
+   * `parent` to show it in, for hosts whose controls live in a shadow root.
+   * Return null for things that are not saveable posts (ads, placeholders).
+   */
+  findSlot(post: Element): { parent: Element; before: Element | null; slot?: string } | null;
   /** The post's permalink, or undefined when it cannot be determined. */
   resolveUrl(post: Element, location: Location): string | undefined;
   /** Bookmark title to use until the agent writes a better one. */
@@ -50,6 +58,11 @@ export interface SiteAdapter {
   snapshotRoot(post: Element): Element;
   /** Attributes added by AgentMark's helper scripts, removed from snapshots. */
   scratchAttributes?: string[];
+  /**
+   * Private elements (chat, messages) are always cut out of snapshots; "reddit"
+   * adds Reddit's own rules (see `private-content.ts`).
+   */
+  privacy?: "reddit";
 }
 
 const BUTTON_ATTR = "data-agentmark-save";
@@ -81,8 +94,8 @@ export const SAVED_TICK_MS = 5_000;
 // The AgentMark mark: a bookmark on a rounded badge, drawn in the button's
 // colour on a 24x24 grid. The badge keeps it distinct from the bare bookmark
 // glyph host sites use for their own "Save".
-const BADGE = "M4.284 1.5H19.716A2.784 2.784 0 0 1 22.5 4.284V19.716A2.784 2.784 0 0 1 19.716 22.5H4.284A2.784 2.784 0 0 1 1.5 19.716V4.284A2.784 2.784 0 0 1 4.284 1.5Z";
-const BOOKMARK =
+export const BADGE = "M4.284 1.5H19.716A2.784 2.784 0 0 1 22.5 4.284V19.716A2.784 2.784 0 0 1 19.716 22.5H4.284A2.784 2.784 0 0 1 1.5 19.716V4.284A2.784 2.784 0 0 1 4.284 1.5Z";
+export const BOOKMARK =
   "M9.057 5.795H14.943A1.67 1.67 0 0 1 16.614 7.466V17.695Q16.614 18.205 16.105 18.205H15.834Q15.58 18.205 15.401 18.026L12 14.625L8.599 18.026Q8.42 18.205 8.166 18.205H7.895Q7.386 18.205 7.386 17.695V7.466A1.67 1.67 0 0 1 9.057 5.795Z";
 // Solid badge with the bookmark cut out, so the page shows through it.
 const SOLID = `<path data-part="badge" fill="currentColor" fill-rule="evenodd" d="${BADGE}${BOOKMARK}"/>`;
@@ -91,8 +104,9 @@ const OUTLINE =
   '<rect data-part="outline" x="2.3" y="2.3" width="19.4" height="19.4" rx="1.984" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
   `<path fill="currentColor" d="${BOOKMARK}"/>`;
 const GLYPH_STROKE = 'fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"';
-const PLUS = `<path data-part="plus" ${GLYPH_STROKE} d="M12 8.86V11.56M10.65 10.21H13.35"/>`;
-const TICK = `<path data-part="tick" ${GLYPH_STROKE} d="M10.4 10.31L11.55 11.41L13.7 9.06"/>`;
+export const PLUS_PATH = "M12 8.86V11.56M10.65 10.21H13.35";
+export const TICK_PATH = "M10.4 10.31L11.55 11.41L13.7 9.06";
+const TICK = `<path data-part="tick" ${GLYPH_STROKE} d="${TICK_PATH}"/>`;
 const BANG =
   `<path data-part="bang" ${GLYPH_STROKE} d="M12 8.61V10.56"/>` +
   '<circle cx="12" cy="11.96" r="0.72" fill="currentColor"/>';
@@ -100,8 +114,9 @@ const BANG =
 type IconLook = ButtonState | "saved-fresh";
 
 const ICON_BODY: Record<IconLook, string> = {
-  idle: SOLID + PLUS,
-  // Hollow while the save is in flight; it fills in once the bookmark exists.
+  // Hollow until the bookmark exists: grey at rest, light blue while the save
+  // is in flight, then it fills in. Outline to solid reads as progress.
+  idle: OUTLINE,
   saving: OUTLINE,
   "saved-fresh": SOLID + TICK,
   saved: SOLID,
@@ -118,10 +133,19 @@ function drawIcon(button: HTMLButtonElement, look: IconLook): void {
   icon.setAttribute("data-look", look);
 }
 
-/** Serialize one post (and whatever its snapshot root holds) as a standalone page. */
-export function buildSnapshot(post: Element, title: string, adapter: SiteAdapter): string {
+/**
+ * Serialize one post (and whatever its snapshot root holds) as a standalone
+ * page. Undefined when private elements cannot be removed for certain: then
+ * no snapshot is sent at all (fail closed).
+ */
+export function buildSnapshot(post: Element, title: string, adapter: SiteAdapter): string | undefined {
   const clone = adapter.snapshotRoot(post).cloneNode(true) as Element;
   clone.querySelectorAll(`[${BUTTON_ATTR}]`).forEach((el) => el.remove());
+  try {
+    removePrivateElements(clone, adapter.privacy === "reddit");
+  } catch {
+    return undefined;
+  }
   for (const attr of adapter.scratchAttributes ?? []) {
     clone.removeAttribute(attr);
     clone.querySelectorAll(`[${attr}]`).forEach((el) => el.removeAttribute(attr));
@@ -264,6 +288,9 @@ function createButton(post: Element, adapter: SiteAdapter): HTMLButtonElement {
     background: "transparent",
     cursor: "pointer",
     flex: "0 0 auto",
+    // Positioned, so it paints above a card-wide link the host lays over the
+    // post (Reddit's feed cards), as the host's own buttons do.
+    position: "relative",
   });
   setState(button, "idle");
   button.addEventListener("click", (event) => {
@@ -292,14 +319,23 @@ export function alignVertically(button: HTMLElement, reference: Element): number
   return offset;
 }
 
+/** Whether `post` already shows a save button of its own. */
+function hasButton(post: Element, adapter: SiteAdapter): boolean {
+  if (!adapter.nested) return post.querySelector(`[${BUTTON_ATTR}]`) !== null;
+  return Array.from(post.querySelectorAll(`[${BUTTON_ATTR}]`)).some(
+    (button) => button.closest(adapter.postSelector) === post,
+  );
+}
+
 /** Add a save button to every post under `root` that does not have one yet. Returns how many were added. */
 export function injectSaveButtons(root: ParentNode, adapter: SiteAdapter): number {
   let added = 0;
   for (const post of Array.from(root.querySelectorAll(adapter.postSelector))) {
-    if (post.querySelector(`[${BUTTON_ATTR}]`)) continue;
+    if (hasButton(post, adapter)) continue;
     const slot = adapter.findSlot(post);
     if (!slot) continue;
     const button = createButton(post, adapter);
+    if (slot.slot) button.slot = slot.slot;
     slot.parent.insertBefore(button, slot.before);
     const reference = adapter.alignWith?.(post);
     if (reference) {
@@ -356,11 +392,15 @@ export async function checkSavedPosts(root: ParentNode, adapter: SiteAdapter): P
   }
 }
 
-/** Keep buttons present as the site loads and re-renders posts. */
-export function watchPosts(doc: Document, adapter: SiteAdapter): MutationObserver {
+/**
+ * Keep buttons present as the site loads and re-renders posts. `onPass` runs
+ * before every injection pass, the first one included.
+ */
+export function watchPosts(doc: Document, adapter: SiteAdapter, onPass?: () => void): MutationObserver {
   let scheduled = false;
   const run = () => {
     scheduled = false;
+    onPass?.();
     injectSaveButtons(doc, adapter);
   };
   const observer = new MutationObserver(() => {
@@ -368,6 +408,7 @@ export function watchPosts(doc: Document, adapter: SiteAdapter): MutationObserve
     scheduled = true;
     setTimeout(run, 250);
   });
+  onPass?.();
   injectSaveButtons(doc, adapter);
   chrome.runtime.onMessage.addListener(handleSaveResult);
   observer.observe(doc.documentElement, { childList: true, subtree: true });

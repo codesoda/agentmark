@@ -197,8 +197,11 @@ impl Config {
         Ok(config)
     }
 
-    /// Save config to the standard location under `home`.
+    /// Save config to the standard location under `home`, re-rendering the
+    /// whole file. Test-only: real writes go through `setup::apply_settings`,
+    /// which edits the file in place so user comments survive.
     /// Creates the config directory if it doesn't exist.
+    #[cfg(test)]
     pub fn save(&self, home: &Path) -> Result<(), ConfigError> {
         let dir = config_dir(home);
         let path = config_file(home);
@@ -230,7 +233,8 @@ pub fn ensure_dir(path: &Path) -> Result<(), ConfigError> {
 }
 
 /// Creates an empty file if it doesn't already exist.
-/// Does NOT truncate existing files.
+/// Does NOT truncate existing files. Test-only: nothing else uses it.
+#[cfg(test)]
 pub fn touch_file(path: &Path) -> Result<(), ConfigError> {
     if path.exists() {
         return Ok(());

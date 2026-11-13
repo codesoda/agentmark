@@ -44,10 +44,56 @@ function createEventTarget() {
   };
 }
 
+/**
+ * An in-memory `chrome.storage` area. `onChange` is called with Chrome's
+ * `(changes, areaName)` shape on every set/remove, so tests can wire it to
+ * `storage.onChanged` listeners.
+ */
+export function createStorageArea(areaName: string, onChange?: (changes: Record<string, chrome.storage.StorageChange>, area: string) => void) {
+  const data: Record<string, unknown> = {};
+  return {
+    data,
+    get: vi.fn(async (keys?: string | string[] | null) => {
+      if (keys === undefined || keys === null) return { ...data };
+      const list = Array.isArray(keys) ? keys : [keys];
+      const out: Record<string, unknown> = {};
+      for (const key of list) if (key in data) out[key] = data[key];
+      return out;
+    }),
+    set: vi.fn(async (items: Record<string, unknown>) => {
+      const changes: Record<string, chrome.storage.StorageChange> = {};
+      for (const [key, value] of Object.entries(items)) {
+        changes[key] = { oldValue: data[key], newValue: value };
+        data[key] = value;
+      }
+      onChange?.(changes, areaName);
+    }),
+    remove: vi.fn(async (keys: string | string[]) => {
+      const changes: Record<string, chrome.storage.StorageChange> = {};
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        if (key in data) changes[key] = { oldValue: data[key] };
+        delete data[key];
+      }
+      onChange?.(changes, areaName);
+    }),
+  };
+}
+
 export function resetChromeMock() {
+  const storageOnChanged = createEventTarget();
+  /** Delivers storage changes to every listener registered on `storage.onChanged`. */
+  const emitStorageChange = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+    for (const [listener] of storageOnChanged.addListener.mock.calls) {
+      (listener as (c: typeof changes, a: string) => void)(changes, area);
+    }
+  };
   const mock = {
     runtime: {
+      id: "test-extension-id" as string | undefined,
       connectNative: vi.fn(),
+      sendNativeMessage: vi.fn(),
+      getManifest: vi.fn(() => ({ version: "0.3.0" })),
+      getPlatformInfo: vi.fn(async () => ({ os: "mac", arch: "arm64", nacl_arch: "arm" })),
       sendMessage: vi.fn(),
       onMessage: createEventTarget(),
       onInstalled: createEventTarget(),
@@ -89,6 +135,15 @@ export function resetChromeMock() {
         get: vi.fn(() => Promise.resolve({})),
         set: vi.fn(() => Promise.resolve()),
       },
+      session: createStorageArea("session", emitStorageChange),
+      onChanged: storageOnChanged,
+    },
+    permissions: {
+      contains: vi.fn(async () => false),
+      request: vi.fn(async () => false),
+      remove: vi.fn(async () => true),
+      onAdded: createEventTarget(),
+      onRemoved: createEventTarget(),
     },
     scripting: {
       executeScript: vi.fn(() => Promise.resolve([{ result: "" }])),

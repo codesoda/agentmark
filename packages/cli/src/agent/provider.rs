@@ -238,7 +238,7 @@ const EXTRA_BIN_DIRS: &[&str] = &[
 /// Chrome starts the native host with a bare system `PATH`, so agent CLIs
 /// installed in user directories would not be found. The inherited `PATH`
 /// keeps priority; well-known install directories are appended.
-fn agent_search_path() -> std::ffi::OsString {
+pub(crate) fn agent_search_path() -> std::ffi::OsString {
     build_search_path(
         std::env::var_os("PATH"),
         std::env::var_os("HOME").map(std::path::PathBuf::from),

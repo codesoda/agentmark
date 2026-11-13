@@ -3,8 +3,8 @@
  * Keeps callback-style Chrome APIs out of React components.
  */
 
-import type { PendingSave, BookmarkChanges, BookmarkDetail, BookmarkSummary, BookmarkStateFilter, RuntimeMessage, RuntimeResponse, RuntimeSaveMessage, ShowResultResponse, UpdateResultResponse } from "./types";
-import { capturePageHtml, shouldScrollBeforeSnapshot } from "./page-snapshot";
+import type { PendingSave, BookmarkChanges, BookmarkDetail, BookmarkSummary, BookmarkStateFilter, RuntimeMessage, RuntimeResponse, RuntimeSaveMessage, SettingsChanges, ShowResultResponse, UpdateResultResponse } from "./types";
+import { capturePageHtml, shouldScrollBeforeSnapshot, SNAPSHOT_PRIVACY } from "./page-snapshot";
 import { classifyConnectionError } from "./connection";
 
 export interface ActiveTab {
@@ -74,7 +74,9 @@ function parseRuntimeResponse(raw: unknown): RuntimeResponse {
     return { success: false, error: "Malformed data in service worker response" };
   }
   if (obj.success === false && typeof obj.error === "string") {
-    return { success: false, error: obj.error };
+    return obj.code === "setup_required"
+      ? { success: false, error: obj.error, code: "setup_required" }
+      : { success: false, error: obj.error };
   }
   return { success: false, error: "Malformed response from service worker" };
 }
@@ -98,6 +100,32 @@ export async function sendSaveMessage(
     ...options,
   };
   return sendRuntimeMessage(message);
+}
+
+/** Probe the app: is it installed, reachable, and set up? See `appStatusFromProbe`. */
+export function sendStatus(): Promise<RuntimeResponse> {
+  return sendRuntimeMessage({ type: "status" });
+}
+
+/** Read the app's settings, agents and defaults (`setup_state_result`). */
+export function sendGetSetupState(): Promise<RuntimeResponse> {
+  return sendRuntimeMessage({ type: "get_setup_state" });
+}
+
+/** Write settings; answers `save_settings_result` or `settings_invalid`. */
+export function sendSaveSettings(settings: SettingsChanges): Promise<RuntimeResponse> {
+  return sendRuntimeMessage({ type: "save_settings", settings });
+}
+
+/**
+ * Open the system folder dialog (`choose_folder_result`). The popup usually
+ * closes while the dialog is open; the service worker then hands a chosen
+ * folder over through the setup draft.
+ */
+export function sendChooseFolder(startPath?: string): Promise<RuntimeResponse> {
+  return sendRuntimeMessage(
+    startPath ? { type: "choose_folder", start_path: startPath } : { type: "choose_folder" },
+  );
 }
 
 /**
@@ -261,7 +289,7 @@ export async function queryPageHtml(tabId: number, url?: string): Promise<string
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       func: capturePageHtml,
-      args: [shouldScrollBeforeSnapshot(url)],
+      args: [shouldScrollBeforeSnapshot(url), SNAPSHOT_PRIVACY],
     });
     const html = results?.[0]?.result;
     if (typeof html !== "string" || html.trim() === "") return undefined;

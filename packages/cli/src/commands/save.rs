@@ -14,7 +14,7 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::agent;
 use crate::agent::provider::RealRunner;
-use crate::bundle::{BodySections, Bundle};
+use crate::bundle::{BodySections, Bundle, BundleError};
 use crate::canonical;
 use crate::cli::SaveArgs;
 use crate::config::{self, Config, ConfigError};
@@ -406,15 +406,17 @@ fn acquire_page(
             match fetch::fetch_page_with_final_url(&req.url) {
                 Ok((fetched_html, fetched_metadata, final_url))
                     if landed_on_requested_page(&req.url, &final_url)
-                        && !looks_like_login_wall(&req.url, &fetched_metadata) =>
+                        && !looks_like_login_wall(&req.url, &fetched_metadata)
+                        && declares_its_own_identity(&fetched_metadata) =>
                 {
                     debug!("snapshot preferred — fetched page kept as supplement");
                     page.metadata = prefer_metadata(fetched_metadata, page.metadata);
                     page.fetched_html = Some(fetched_html);
                 }
                 Ok((_, _, final_url)) => {
-                    // Typically a login wall. Its title and canonical URL describe
-                    // the login page, not this one, so none of it may be used.
+                    // Typically a login wall or an app shell (HTTP 200, a bare
+                    // site-name title, no canonical URL). It does not describe
+                    // this page, so none of it may be used.
                     debug!(%final_url, "snapshot preferred — fetch did not return this page, ignoring it");
                 }
                 Err(e) => debug!(error = %e, "snapshot preferred — fetch unavailable"),
@@ -485,6 +487,20 @@ fn looks_like_login_wall(requested: &str, metadata: &PageMetadata) -> bool {
     ["log in", "login", "sign in", "sign up", "signin", "signup"]
         .iter()
         .any(|needle| title.starts_with(needle) || title.contains(&format!(" {needle}")))
+}
+
+/// Whether a fetched page shows it is a real document rather than an app shell.
+///
+/// Single-page apps answer an anonymous client with HTTP 200 and a generic
+/// shell titled with the bare site name. A page that declares a canonical URL
+/// (`<link rel="canonical">` or `og:url`) names the document it is, so its
+/// metadata can be trusted over the snapshot's. Without one, the snapshot the
+/// user is looking at is the better source.
+fn declares_its_own_identity(metadata: &PageMetadata) -> bool {
+    metadata
+        .canonical_url
+        .as_deref()
+        .is_some_and(|c| !c.trim().is_empty())
 }
 
 /// Merge page metadata field by field, taking `primary` where it has a value.
@@ -805,17 +821,13 @@ fn handle_new_save(
         provided_title,
     );
 
-    let capture_source_str = match bookmark.capture_source {
-        CaptureSource::Cli => "cli",
-        CaptureSource::ChromeExtension => "chrome_extension",
-    };
     let bundle = Bundle::create(
         &config.storage_path,
         &bookmark,
         &page.metadata,
         &page.extraction.article_markdown,
         &page.raw_html,
-        capture_source_str,
+        capture_source_name(&bookmark.capture_source),
     )?;
 
     bundle.update_fetched_html(page.fetched_html.as_deref())?;
@@ -840,6 +852,14 @@ fn handle_new_save(
     })
 }
 
+/// The capture source as written in `bookmark.md` front matter.
+fn capture_source_name(source: &CaptureSource) -> &'static str {
+    match source {
+        CaptureSource::Cli => "cli",
+        CaptureSource::ChromeExtension => "chrome_extension",
+    }
+}
+
 // ── Duplicate save path ─────────────────────────────────────────────
 
 #[instrument(skip_all, fields(id = %existing.id, %canonical_url))]
@@ -855,12 +875,29 @@ fn handle_duplicate(
     let old_hash = existing.content_hash.clone();
     let new_hash = &page.extraction.content_hash;
     // A save with no page content must never overwrite a previous capture.
-    let content_changed =
+    let mut content_changed =
         page.source != PageSource::Unavailable && old_hash.as_deref() != Some(new_hash);
     debug!(content_changed, "duplicate detected");
 
-    // Find existing bundle on disk
-    let bundle = Bundle::find(&config.storage_path, &existing.saved_at, &existing.id)?;
+    // Find existing bundle on disk. After the storage folder changes, an older
+    // bookmark's files stay in the previous folder: write a fresh bundle here,
+    // keeping the bookmark's id, date and user-owned fields from the index.
+    let bundle = match Bundle::find(&config.storage_path, &existing.saved_at, &existing.id) {
+        Ok(bundle) => bundle,
+        Err(BundleError::BundleNotFound { path }) => {
+            warn!(missing = %path.display(), "bundle not in the storage folder — writing a new one");
+            content_changed = true;
+            Bundle::create(
+                &config.storage_path,
+                &existing,
+                &page.metadata,
+                &page.extraction.article_markdown,
+                &page.raw_html,
+                capture_source_name(&existing.capture_source),
+            )?
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     if content_changed {
         // Content changed: update bundle files, metadata, and reset enrichment

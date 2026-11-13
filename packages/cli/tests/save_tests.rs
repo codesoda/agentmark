@@ -596,12 +596,12 @@ fn save_url_variants_detected_as_duplicate() {
     let _mock1 = server
         .mock("GET", "/article")
         .with_status(200)
-        .with_body(&html)
+        .with_body(html)
         .create();
     let _mock2 = server
         .mock("GET", "/article?utm_source=twitter&fbclid=abc")
         .with_status(200)
-        .with_body(&html)
+        .with_body(html)
         .create();
 
     let url = format!("{}/article", server.url());

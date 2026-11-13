@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::models::BookmarkState;
+use crate::setup::{FieldError, SettingsChanges, SetupState};
 
 /// Errors when converting a raw JSON value into a typed message.
 #[derive(Debug, Error)]
@@ -53,8 +54,12 @@ pub enum IncomingMessage {
         #[serde(default)]
         page_html: Option<String>,
     },
-    /// Health check.
-    Status,
+    /// Health check. `extension_version` feeds the liveness file; any other
+    /// extra keys are ignored so older and newer extensions both parse.
+    Status {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extension_version: Option<String>,
+    },
     /// List existing collections.
     ListCollections,
     /// List recent bookmarks with optional filtering.
@@ -73,6 +78,15 @@ pub enum IncomingMessage {
     },
     /// Ask which of these URLs are already bookmarked (index only).
     LookupUrls { urls: Vec<String> },
+    /// Read setup state and current settings. Works before setup.
+    GetSetupState,
+    /// Validate and write settings (partial update). Works before setup.
+    SaveSettings { settings: SettingsChanges },
+    /// Show the system folder dialog. Sent one-shot, never on the shared port.
+    ChooseFolder {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_path: Option<String>,
+    },
 }
 
 /// Messages sent from the native host back to the Chrome extension.
@@ -85,8 +99,13 @@ pub enum OutgoingMessage {
         path: String,
         status: String,
     },
-    /// Result of a health check.
-    StatusResult { ok: bool, version: String },
+    /// Result of a health check. `initialized` is false until setup is done.
+    StatusResult {
+        ok: bool,
+        version: String,
+        #[serde(default)]
+        initialized: bool,
+    },
     /// Result of a collection listing.
     ListCollectionsResult { collections: Vec<String> },
     /// Result of a bookmark listing.
@@ -97,9 +116,48 @@ pub enum OutgoingMessage {
     UpdateResult { bookmark: BookmarkDetail },
     /// The request URLs that are already bookmarked, verbatim and in request order.
     LookupUrlsResult { saved: Vec<String> },
-    /// Error response for any failed operation.
-    Error { message: String },
+    /// Setup state, for `get_setup_state`.
+    SetupStateResult { state: SetupState },
+    /// The new state after `save_settings` succeeded.
+    SaveSettingsResult { state: SetupState },
+    /// `save_settings` validation failed; nothing was written.
+    SettingsInvalid { errors: Vec<FieldError> },
+    /// Outcome of `choose_folder`. All keys are always present.
+    ChooseFolderResult {
+        outcome: FolderOutcome,
+        path: Option<String>,
+        path_display: Option<String>,
+        reason: Option<String>,
+    },
+    /// Error response for any failed operation. `code` is set only for
+    /// errors the extension acts on; old extensions ignore it and show `message`.
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ErrorCode>,
+    },
 }
+
+/// Machine-readable error kinds carried on `error` responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    SetupRequired,
+}
+
+/// `choose_folder_result.outcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderOutcome {
+    Chosen,
+    Cancelled,
+    Unavailable,
+}
+
+/// Message for requests that need setup. Keeps the `not initialized` prefix
+/// that older extensions and existing tests match on.
+pub const SETUP_REQUIRED_MESSAGE: &str = "not initialized: AgentMark is not set up yet. \
+     Finish setup in the extension or the AgentMark app.";
 
 /// Narrow DTO for bookmark list responses — only fields needed for list rendering.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,6 +224,15 @@ impl OutgoingMessage {
     pub fn error(message: impl Into<String>) -> Self {
         OutgoingMessage::Error {
             message: message.into(),
+            code: None,
+        }
+    }
+
+    /// The `setup_required` error for requests that need a set-up AgentMark.
+    pub fn setup_required() -> Self {
+        OutgoingMessage::Error {
+            message: SETUP_REQUIRED_MESSAGE.to_string(),
+            code: Some(ErrorCode::SetupRequired),
         }
     }
 }
@@ -185,7 +252,8 @@ impl IncomingMessage {
             .ok_or(MessageError::MissingType)?;
 
         match type_str {
-            "save" | "status" | "list_collections" | "list" | "show" | "update" | "lookup_urls" => {
+            "save" | "status" | "list_collections" | "list" | "show" | "update" | "lookup_urls"
+            | "get_setup_state" | "save_settings" | "choose_folder" => {
                 // Use serde for full field validation.
                 serde_json::from_value(value)
                     .map_err(|e| MessageError::InvalidFields(e.to_string()))
@@ -287,7 +355,24 @@ mod tests {
     fn deserialize_status() {
         let value = json!({"type": "status"});
         let msg = IncomingMessage::from_value(value).unwrap();
-        assert_eq!(msg, IncomingMessage::Status);
+        assert_eq!(
+            msg,
+            IncomingMessage::Status {
+                extension_version: None
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_status_with_extension_version_and_extra_keys() {
+        let value = json!({"type": "status", "extension_version": "x", "future": 1});
+        let msg = IncomingMessage::from_value(value).unwrap();
+        assert_eq!(
+            msg,
+            IncomingMessage::Status {
+                extension_version: Some("x".into())
+            }
+        );
     }
 
     #[test]
@@ -362,19 +447,119 @@ mod tests {
         let msg = OutgoingMessage::StatusResult {
             ok: true,
             version: "0.1.0".into(),
+            initialized: false,
         };
         let value = msg.to_value().unwrap();
-        assert_eq!(value["type"], "status_result");
-        assert_eq!(value["ok"], true);
-        assert_eq!(value["version"], "0.1.0");
+        assert_eq!(
+            value,
+            json!({"type": "status_result", "ok": true, "version": "0.1.0", "initialized": false})
+        );
     }
 
     #[test]
     fn serialize_error() {
         let msg = OutgoingMessage::error("something went wrong");
         let value = msg.to_value().unwrap();
-        assert_eq!(value["type"], "error");
-        assert_eq!(value["message"], "something went wrong");
+        assert_eq!(
+            value,
+            json!({"type": "error", "message": "something went wrong"}),
+            "no code key on ordinary errors"
+        );
+    }
+
+    #[test]
+    fn serialize_setup_required_error() {
+        let value = OutgoingMessage::setup_required().to_value().unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "type": "error",
+                "message": "not initialized: AgentMark is not set up yet. Finish setup in the extension or the AgentMark app.",
+                "code": "setup_required"
+            })
+        );
+        let back: OutgoingMessage = serde_json::from_value(value).unwrap();
+        assert_eq!(back, OutgoingMessage::setup_required());
+    }
+
+    // -- Setup messages --
+
+    #[test]
+    fn deserialize_setup_requests() {
+        assert_eq!(
+            IncomingMessage::from_value(json!({"type": "get_setup_state"})).unwrap(),
+            IncomingMessage::GetSetupState
+        );
+        assert_eq!(
+            IncomingMessage::from_value(json!({"type": "choose_folder"})).unwrap(),
+            IncomingMessage::ChooseFolder { start_path: None }
+        );
+        assert_eq!(
+            IncomingMessage::from_value(json!({"type": "choose_folder", "start_path": "~/x"}))
+                .unwrap(),
+            IncomingMessage::ChooseFolder {
+                start_path: Some("~/x".into())
+            }
+        );
+        let msg = IncomingMessage::from_value(json!({
+            "type": "save_settings",
+            "settings": {"storage_path": "~/A", "system_prompt": null, "snapshot_sites": ["a.com"]}
+        }))
+        .unwrap();
+        match msg {
+            IncomingMessage::SaveSettings { settings } => {
+                assert_eq!(settings.storage_path.as_deref(), Some("~/A"));
+                assert_eq!(settings.system_prompt, Some(None));
+                assert_eq!(settings.default_agent, None);
+                assert_eq!(settings.snapshot_sites, Some(vec!["a.com".to_string()]));
+            }
+            other => panic!("expected SaveSettings, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_settings_rejects_bad_shapes() {
+        for value in [
+            json!({"type": "save_settings"}),
+            json!({"type": "save_settings", "settings": null}),
+            json!({"type": "save_settings", "settings": {"enrichment_enabled": "yes"}}),
+        ] {
+            let err = IncomingMessage::from_value(value).unwrap_err();
+            assert!(matches!(err, MessageError::InvalidFields(_)), "{err:?}");
+            assert!(err.to_string().starts_with("invalid message fields: "));
+        }
+    }
+
+    #[test]
+    fn serialize_choose_folder_result_keeps_null_keys() {
+        let msg = OutgoingMessage::ChooseFolderResult {
+            outcome: FolderOutcome::Cancelled,
+            path: None,
+            path_display: None,
+            reason: None,
+        };
+        assert_eq!(
+            msg.to_value().unwrap(),
+            json!({"type": "choose_folder_result", "outcome": "cancelled", "path": null, "path_display": null, "reason": null})
+        );
+    }
+
+    #[test]
+    fn serialize_settings_invalid() {
+        let msg = OutgoingMessage::SettingsInvalid {
+            errors: vec![crate::setup::FieldError {
+                field: crate::setup::SettingsField::StoragePath,
+                index: None,
+                code: crate::setup::FieldErrorCode::NotWritable,
+                message: "AgentMark cannot write to /Volumes/X.".into(),
+            }],
+        };
+        assert_eq!(
+            msg.to_value().unwrap(),
+            json!({"type": "settings_invalid", "errors": [
+                {"field": "storage_path", "index": null, "code": "not_writable", "message": "AgentMark cannot write to /Volumes/X."}
+            ]})
+        );
     }
 
     #[test]

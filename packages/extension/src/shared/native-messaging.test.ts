@@ -323,4 +323,63 @@ describe("NativeMessagingClient", () => {
       expect(chromeMock.runtime.connectNative).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe("sendOneShot", () => {
+    it("sends one message through sendNativeMessage, not the port, and parses the reply", async () => {
+      chromeMock.runtime.sendNativeMessage.mockImplementation((_host: string, _msg: unknown, cb: (r: unknown) => void) => {
+        cb({ type: "choose_folder_result", outcome: "cancelled", path: null, path_display: null, reason: null });
+      });
+
+      const response = await client.sendOneShot({ type: "choose_folder", start_path: "~/Documents" }, 310_000);
+
+      expect(chromeMock.runtime.sendNativeMessage).toHaveBeenCalledWith(
+        "com.agentmark.native",
+        { type: "choose_folder", start_path: "~/Documents" },
+        expect.any(Function),
+      );
+      expect(chromeMock.runtime.connectNative).not.toHaveBeenCalled();
+      expect(response).toEqual({
+        type: "choose_folder_result",
+        outcome: "cancelled",
+        path: null,
+        path_display: null,
+        reason: null,
+      });
+    });
+
+    it("rejects with Chrome's lastError", async () => {
+      chromeMock.runtime.sendNativeMessage.mockImplementation((_h: string, _m: unknown, cb: (r: unknown) => void) => {
+        chromeMock.runtime.lastError = { message: "Specified native messaging host not found." };
+        cb(undefined);
+        chromeMock.runtime.lastError = null;
+      });
+
+      await expect(client.sendOneShot({ type: "choose_folder" }, 1000)).rejects.toThrow(
+        "Specified native messaging host not found.",
+      );
+    });
+
+    it("rejects a malformed reply", async () => {
+      chromeMock.runtime.sendNativeMessage.mockImplementation((_h: string, _m: unknown, cb: (r: unknown) => void) => {
+        cb({ type: "choose_folder_result", outcome: "maybe" });
+      });
+
+      await expect(client.sendOneShot({ type: "choose_folder" }, 1000)).rejects.toThrow(/choose_folder_result/);
+    });
+
+    it("times out and ignores a late reply", async () => {
+      vi.useFakeTimers();
+      let reply!: (r: unknown) => void;
+      chromeMock.runtime.sendNativeMessage.mockImplementation((_h: string, _m: unknown, cb: (r: unknown) => void) => {
+        reply = cb;
+      });
+
+      const pending = client.sendOneShot({ type: "choose_folder" }, 310_000);
+      const assertion = expect(pending).rejects.toThrow("Native host request timed out");
+      await vi.advanceTimersByTimeAsync(310_001);
+      await assertion;
+      expect(() => reply({ type: "choose_folder_result", outcome: "cancelled" })).not.toThrow();
+      vi.useRealTimers();
+    });
+  });
 });

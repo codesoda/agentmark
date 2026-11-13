@@ -5,7 +5,6 @@
 
 use tracing::instrument;
 
-use crate::bundle::Bundle;
 use crate::cli::ShowArgs;
 use crate::config;
 use crate::display::{self, ShowDetail};
@@ -24,15 +23,7 @@ pub fn run_show(args: ShowArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Read article content from the bundle (show-specific; detail helper skips this)
     let config = config::Config::load(&home)?;
-    let bundle = Bundle::find(
-        &config.storage_path,
-        &loaded.bookmark.saved_at,
-        &loaded.bookmark.id,
-    )
-    .map_err(|e| DetailError::BundleDrift {
-        id: loaded.bookmark.id.clone(),
-        detail: e.to_string(),
-    })?;
+    let bundle = bookmark_detail::find_bundle(&config.storage_path, &loaded.bookmark)?;
 
     let article = match bundle.read_article_md() {
         Ok(content) => Some(content),

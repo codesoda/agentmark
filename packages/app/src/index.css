@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  /* A desktop window, not a page: no rubber-band scroll, no text cursor on chrome. */
+  overscroll-behavior: none;
+  cursor: default;
+}
+
+body {
+  margin: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea,
+code,
+[data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+button,
+label {
+  cursor: default;
+}

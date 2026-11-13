@@ -8,22 +8,50 @@
 
 import { getNativeClient } from "../shared/native-messaging";
 import type {
+  ChooseFolderResultResponse,
   RuntimeMessage,
   RuntimeResponse,
   NativeRequest,
+  NativeResponse,
   PendingSave,
   SaveResultNotice,
 } from "../shared/types";
 import { isErrorResponse } from "../shared/types";
-import { EXTENSION_NAME } from "../shared/constants";
+import { EXTENSION_NAME, REPORT_PAGE_MESSAGE, SIDEPANEL_VIEW_KEY } from "../shared/constants";
+import { isUnknownMessageError } from "../shared/connection";
 import { queryPageHtml } from "../shared/runtime";
+import { clearSetupDraft, updateSetupDraft } from "../shared/setup-draft";
 import { ToolbarIcon } from "./toolbar-icon";
 
 const CONTEXT_MENU_ID = "agentmark-save";
 const SIDEPANEL_MENU_ID = "agentmark-sidepanel";
+const SETTINGS_MENU_ID = "agentmark-settings";
+/** The folder dialog may stay open up to the host's 300 s limit; allow a little more. */
+const CHOOSE_FOLDER_TIMEOUT_MS = 310_000;
+/** The host truncates longer values; never send more. */
+const MAX_EXTENSION_VERSION_LENGTH = 64;
 const SUPPORTED_SCHEMES = new Set(["http:", "https:"]);
 /** The native host considers at most this many URLs per lookup. */
 const MAX_LOOKUP_URLS = 200;
+/** How long the install/startup ping waits for the host. */
+const PING_TIMEOUT_MS = 10_000;
+/**
+ * The only messages content scripts send (`src/content/`). Anything else from
+ * a content script (settings, folder dialog, bookmark reads and edits) is
+ * refused: a page should never reach those, even through a content-script bug.
+ */
+const CONTENT_SCRIPT_MESSAGES: ReadonlySet<string> = new Set(["open_save_popup", "lookup_urls", REPORT_PAGE_MESSAGE]);
+
+/**
+ * Whether a message came from a content script. Content scripts run in a tab;
+ * extension pages (popup, side panel) have no tab, or, when opened in a tab,
+ * this extension's own origin.
+ */
+function fromContentScript(sender: chrome.runtime.MessageSender): boolean {
+  if (sender.tab === undefined) return false;
+  const own = `chrome-extension://${chrome.runtime.id}`;
+  return sender.origin !== own && !(sender.url ?? "").startsWith(`${own}/`);
+}
 
 // --- Context menu ---
 
@@ -39,7 +67,26 @@ function ensureContextMenu(): void {
       title: `Open ${EXTENSION_NAME} Side Panel`,
       contexts: ["action"],
     });
+    chrome.contextMenus.create({
+      id: SETTINGS_MENU_ID,
+      title: "Settings",
+      contexts: ["action"],
+    });
   });
+}
+
+/** This extension's version, sent with `status` so the host can record which build connected. */
+function extensionVersion(): string | undefined {
+  try {
+    return chrome.runtime.getManifest().version.slice(0, MAX_EXTENSION_VERSION_LENGTH);
+  } catch {
+    return undefined;
+  }
+}
+
+function statusRequest(): NativeRequest {
+  const version = extensionVersion();
+  return version ? { type: "status", extension_version: version } : { type: "status" };
 }
 
 // --- URL validation ---
@@ -59,15 +106,83 @@ function isSupportedUrl(url: string | undefined): url is string {
 async function handleNativeRequest(request: NativeRequest): Promise<RuntimeResponse> {
   try {
     const client = getNativeClient();
-    const response = await client.sendRequest(request);
-    if (isErrorResponse(response)) {
-      return { success: false, error: response.message };
-    }
-    return { success: true, data: response };
+    return toRuntimeResponse(await client.sendRequest(request));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { success: false, error: message };
   }
+}
+
+function toRuntimeResponse(response: NativeResponse): RuntimeResponse {
+  if (isErrorResponse(response)) {
+    return response.code
+      ? { success: false, error: response.message, code: response.code }
+      : { success: false, error: response.message };
+  }
+  return { success: true, data: response };
+}
+
+/** What a CLI too old for the folder dialog answers instead (contract §3.2). */
+const FOLDER_DIALOG_NEEDS_UPDATE: ChooseFolderResultResponse = {
+  type: "choose_folder_result",
+  outcome: "unavailable",
+  path: null,
+  path_display: null,
+  reason: "Update AgentMark to use the folder dialog.",
+};
+
+/**
+ * Show the system folder dialog in its own host process (contract §2.4).
+ * A chosen folder also goes into the setup draft first, because the popup
+ * has usually closed by the time the user picks one.
+ */
+async function chooseFolder(startPath: string | undefined): Promise<RuntimeResponse> {
+  const request: NativeRequest = startPath
+    ? { type: "choose_folder", start_path: startPath }
+    : { type: "choose_folder" };
+  let response: NativeResponse;
+  try {
+    response = await getNativeClient().sendOneShot(request, CHOOSE_FOLDER_TIMEOUT_MS);
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (isErrorResponse(response) && isUnknownMessageError(response.message)) {
+    return { success: true, data: FOLDER_DIALOG_NEEDS_UPDATE };
+  }
+  if (response.type === "choose_folder_result" && response.outcome === "chosen" && response.path) {
+    await updateSetupDraft({ storage_path: response.path_display ?? response.path });
+  }
+  return toRuntimeResponse(response);
+}
+
+/** Save settings; a successful save ends any setup in progress, so its draft goes. */
+async function saveSettings(settings: unknown): Promise<RuntimeResponse> {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return { success: false, error: "save_settings needs a settings object" };
+  }
+  const response = await handleNativeRequest({ type: "save_settings", settings });
+  if (response.success && response.data.type === "save_settings_result") await clearSetupDraft();
+  return response;
+}
+
+/**
+ * A content script reports the page it runs on (contract §3.3). Accepted
+ * only from a tab's top frame, for the URL Chrome says that frame shows.
+ */
+function handleReportPage(message: { url?: unknown }, sender: chrome.runtime.MessageSender): boolean {
+  const tabId = sender.tab?.id;
+  const url = message.url;
+  if (
+    typeof tabId !== "number" ||
+    sender.frameId !== 0 ||
+    typeof url !== "string" ||
+    !isSupportedUrl(url) ||
+    url !== sender.url
+  ) {
+    return false;
+  }
+  void toolbarIcon.reportPage(tabId, url);
+  return true;
 }
 
 /** Per-tab toolbar icon state; asks the index through the same request path as everything else. */
@@ -126,6 +241,11 @@ function handleRuntimeMessage(
   sender: chrome.runtime.MessageSender,
   sendResponse: (response: RuntimeResponse) => void,
 ): boolean {
+  if (fromContentScript(sender) && !CONTENT_SCRIPT_MESSAGES.has(String((message as { type?: unknown }).type))) {
+    sendResponse({ success: false, error: "Not allowed from a web page" });
+    return false;
+  }
+
   if (message.type === "open_save_popup") {
     if (!isSupportedUrl(message.url)) {
       sendResponse({ success: false, error: "Unsupported or missing URL" });
@@ -186,8 +306,30 @@ function handleRuntimeMessage(
   }
 
   if (message.type === "status") {
-    handleNativeRequest({ type: "status" }).then(sendResponse);
+    handleNativeRequest(statusRequest()).then(sendResponse);
     return true;
+  }
+
+  if (message.type === "get_setup_state") {
+    handleNativeRequest({ type: "get_setup_state" }).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "save_settings") {
+    saveSettings((message as { settings?: unknown }).settings).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "choose_folder") {
+    const start = (message as { start_path?: unknown }).start_path;
+    chooseFolder(typeof start === "string" && start.trim() ? start : undefined).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === REPORT_PAGE_MESSAGE) {
+    const ok = handleReportPage(message as { url?: unknown }, sender);
+    (sendResponse as (response: unknown) => void)({ ok });
+    return false;
   }
 
   if (message.type === "list_collections") {
@@ -223,7 +365,7 @@ function handleRuntimeMessage(
     return true;
   }
 
-  sendResponse({ success: false, error: `Unknown message type: ${(message as Record<string, unknown>).type}` });
+  sendResponse({ success: false, error: `Unknown message type: ${(message as unknown as Record<string, unknown>).type}` });
   return false;
 }
 
@@ -260,6 +402,27 @@ async function openSidePanel(): Promise<void> {
   }
 }
 
+/**
+ * Open the side panel on its Settings view. Must stay synchronous up to
+ * `sidePanel.open`, which Chrome allows only inside the click's user gesture.
+ */
+function openSettings(tab?: chrome.tabs.Tab): void {
+  try {
+    void Promise.resolve(chrome.storage.session.set({ [SIDEPANEL_VIEW_KEY]: "settings" })).catch(() => {});
+  } catch {
+    // The panel then opens on its default view.
+  }
+  if (tab?.windowId !== undefined) {
+    try {
+      void Promise.resolve(chrome.sidePanel.open({ windowId: tab.windowId })).catch(() => {});
+    } catch {
+      // No window to open in.
+    }
+    return;
+  }
+  void openSidePanel();
+}
+
 function handleCommand(command: string): void {
   if (command === "open_side_panel") {
     openSidePanel();
@@ -274,6 +437,10 @@ function handleContextMenuClick(
 ): void {
   if (info.menuItemId === SIDEPANEL_MENU_ID) {
     openSidePanel();
+    return;
+  }
+  if (info.menuItemId === SETTINGS_MENU_ID) {
+    openSettings(tab);
     return;
   }
   if (info.menuItemId !== CONTEXT_MENU_ID) return;
@@ -318,12 +485,31 @@ function handleContextMenuClick(
 
 // --- Listener registration (must be at module scope for MV3) ---
 
+/**
+ * One status request at install and browser start, so the host records that
+ * this extension connected (its liveness file, with `extension_version`)
+ * without the popup being opened. Sent one-shot: Chrome closes the port after
+ * the reply, so the host exits and the worker can sleep, instead of both
+ * staying alive for the whole browser session. Errors are ignored.
+ */
+function pingApp(): void {
+  try {
+    void getNativeClient()
+      .sendOneShot(statusRequest(), PING_TIMEOUT_MS)
+      .catch(() => {});
+  } catch {
+    // No native messaging at all: nothing to record.
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   ensureContextMenu();
+  pingApp();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureContextMenu();
+  pingApp();
 });
 
 chrome.runtime.onMessage.addListener(handleRuntimeMessage);
@@ -336,6 +522,9 @@ chrome.commands.onCommand.addListener(handleCommand);
 chrome.tabs.onUpdated.addListener(toolbarIcon.handleTabUpdated);
 chrome.tabs.onActivated.addListener(toolbarIcon.handleTabActivated);
 chrome.tabs.onRemoved.addListener(toolbarIcon.handleTabRemoved);
+// `tabs` is optional: the tab listeners above check it, these keep the check current.
+chrome.permissions.onAdded.addListener(toolbarIcon.handlePermissionsAdded);
+chrome.permissions.onRemoved.addListener(toolbarIcon.handlePermissionsRemoved);
 
 // Exported for testing
 export {
@@ -346,8 +535,12 @@ export {
   handleNativeRequest,
   handleCommand,
   openSidePanel,
+  openSettings,
+  pingApp,
   showNotification,
   toolbarIcon,
   CONTEXT_MENU_ID,
   SIDEPANEL_MENU_ID,
+  SETTINGS_MENU_ID,
+  CHOOSE_FOLDER_TIMEOUT_MS,
 };

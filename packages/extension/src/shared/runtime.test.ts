@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { SNAPSHOT_PRIVACY } from "./page-snapshot";
 import { resetChromeMock } from "../test/chrome-mock";
 import {
   queryActiveTab,
@@ -676,10 +677,10 @@ describe("queryPageHtml", () => {
     executeScript.mockResolvedValue([{ result: "<html></html>" }]);
 
     await queryPageHtml(42, "https://www.linkedin.com/in/someone/");
-    expect(executeScript.mock.calls[0][0].args).toEqual([true]);
+    expect(executeScript.mock.calls[0][0].args).toEqual([true, SNAPSHOT_PRIVACY]);
 
     await queryPageHtml(42, "https://example.com/");
-    expect(executeScript.mock.calls[1][0].args).toEqual([false]);
+    expect(executeScript.mock.calls[1][0].args).toEqual([false, SNAPSHOT_PRIVACY]);
   });
 
   it("truncates oversized snapshots", async () => {

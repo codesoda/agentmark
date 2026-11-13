@@ -4,9 +4,9 @@
 //! Keeps DB+bundle assembly logic in one place instead of duplicating it.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::bundle::Bundle;
+use crate::bundle::{Bundle, BundleError};
 use crate::config::{self, Config};
 use crate::db::{self, BookmarkRepository, DbError};
 use crate::models::Bookmark;
@@ -18,9 +18,23 @@ use crate::native::messages::{BookmarkChanges, BookmarkDetail};
 pub enum DetailError {
     Config(crate::config::ConfigError),
     Db(DbError),
-    NotFound { id: String },
-    BundleDrift { id: String, detail: String },
-    PartialUpdate { id: String, detail: String },
+    NotFound {
+        id: String,
+    },
+    BundleDrift {
+        id: String,
+        detail: String,
+    },
+    /// The bookmark's files are not in the storage folder, usually because the
+    /// folder was changed after it was saved.
+    BundleMissing {
+        id: String,
+        folder: PathBuf,
+    },
+    PartialUpdate {
+        id: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for DetailError {
@@ -32,6 +46,13 @@ impl fmt::Display for DetailError {
             DetailError::BundleDrift { id, detail } => {
                 write!(f, "bundle/index drift for {id}: {detail}")
             }
+            DetailError::BundleMissing { id, folder } => write!(
+                f,
+                "the files for bookmark {id} are not in the storage folder {}. \
+                 They may still be in the folder AgentMark used before; move them \
+                 into this folder to open or edit the bookmark",
+                folder.display()
+            ),
             DetailError::PartialUpdate { id, detail } => {
                 write!(
                     f,
@@ -96,12 +117,7 @@ pub fn load_bookmark_detail_with_repo(
         .get_by_id(id)?
         .ok_or_else(|| DetailError::NotFound { id: id.to_string() })?;
 
-    let bundle = Bundle::find(storage_path, &bookmark.saved_at, &bookmark.id).map_err(|e| {
-        DetailError::BundleDrift {
-            id: bookmark.id.clone(),
-            detail: e.to_string(),
-        }
-    })?;
+    let bundle = find_bundle(storage_path, &bookmark)?;
 
     let summary = match bundle.read_body_sections() {
         Ok(sections) => sections.summary,
@@ -114,6 +130,20 @@ pub fn load_bookmark_detail_with_repo(
     };
 
     Ok(LoadedBookmarkDetail { bookmark, summary })
+}
+
+/// Find a bookmark's bundle, naming the folder searched when it is missing.
+pub fn find_bundle(storage_path: &Path, bookmark: &Bookmark) -> Result<Bundle, DetailError> {
+    Bundle::find(storage_path, &bookmark.saved_at, &bookmark.id).map_err(|e| match e {
+        BundleError::BundleNotFound { .. } => DetailError::BundleMissing {
+            id: bookmark.id.clone(),
+            folder: storage_path.to_path_buf(),
+        },
+        other => DetailError::BundleDrift {
+            id: bookmark.id.clone(),
+            detail: other.to_string(),
+        },
+    })
 }
 
 // ── Update application ─────────────────────────────────────────────
@@ -141,13 +171,7 @@ pub fn apply_bookmark_update(
     apply_changes(&mut bookmark, changes);
 
     // Bundle-first update
-    let bundle =
-        Bundle::find(&config.storage_path, &bookmark.saved_at, &bookmark.id).map_err(|e| {
-            DetailError::BundleDrift {
-                id: bookmark.id.clone(),
-                detail: e.to_string(),
-            }
-        })?;
+    let bundle = find_bundle(&config.storage_path, &bookmark)?;
 
     bundle
         .update_bookmark_md_preserving_body(&bookmark)

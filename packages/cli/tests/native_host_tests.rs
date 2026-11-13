@@ -1123,6 +1123,68 @@ fn blocked_resave_without_snapshot_keeps_existing_content() {
     assert!(article.contains("substantial test article"), "{article}");
 }
 
+// ── Storage folder change ───────────────────────────────────────────
+
+/// After the storage folder changes, older bookmarks' files stay in the old
+/// folder. Show and update say so plainly; saving the page again writes a
+/// fresh bundle in the new folder under the same id, keeping user fields.
+#[test]
+fn storage_folder_change_resave_writes_fresh_bundle_and_show_explains() {
+    let tmp = TempDir::new().unwrap();
+    let old_storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &old_storage);
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/article")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+    let url = format!("{}/article", server.url());
+    let saved = save_bookmark(&home, &url, "T", &["keep-me"]);
+    let id = saved["id"].as_str().unwrap().to_string();
+
+    let new_storage = tmp.path().join("Other");
+    std::fs::create_dir_all(&new_storage).unwrap();
+    std::fs::write(
+        home.join(".agentmark/config.toml"),
+        format!(
+            "default_agent = \"claude\"\nstorage_path = \"{}\"\n\n[enrichment]\nenabled = false\n",
+            new_storage.display()
+        ),
+    )
+    .unwrap();
+
+    for reply in [
+        show_bookmark(&home, &id),
+        update_bookmark(&home, &id, json!({ "note": "n" })),
+    ] {
+        assert_eq!(reply["type"], "error", "{reply:?}");
+        let message = reply["message"].as_str().unwrap();
+        assert!(
+            message.contains(&new_storage.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains("folder AgentMark used before"),
+            "{message}"
+        );
+        assert!(!message.contains("drift"), "{message}");
+    }
+
+    let resaved = save_bookmark(&home, &url, "T", &[]);
+    assert_eq!(resaved["id"], id.as_str(), "{resaved:?}");
+    let bundle_dirs = find_bundle_dirs(&new_storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    let article = std::fs::read_to_string(bundle_dirs[0].join("article.md")).unwrap();
+    assert!(article.contains("substantial test article"), "{article}");
+
+    let shown = show_bookmark(&home, &id);
+    assert_eq!(shown["type"], "show_result", "{shown:?}");
+    assert_eq!(shown["bookmark"]["user_tags"], json!(["keep-me"]));
+}
+
 // ── Snapshot-preferred sites ────────────────────────────────────────
 
 /// Like `setup_home`, with the mock server registered as a snapshot-preferred site.
@@ -1309,6 +1371,81 @@ fn listed_site_ignores_fetch_redirected_to_login_page() {
     assert!(!canonical.contains("login"), "{canonical}");
 }
 
+/// Some single-page apps answer the CLI's fetch with HTTP 200 on the same URL
+/// but serve a generic shell titled with the bare site name and no canonical
+/// URL. That shell is not the page, so the snapshot's metadata must win.
+#[test]
+fn listed_site_ignores_app_shell_without_canonical() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/r/");
+
+    let mut server = mockito::Server::new();
+    let _shell = server
+        .mock("GET", "/r/programming/comments/abc/a_post/")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(
+            r#"<!DOCTYPE html><html><head><title>Reddit</title></head>
+<body><div id="root"></div><script src="/app.js"></script></body></html>"#,
+        )
+        .create();
+
+    save_with_snapshot(
+        &home,
+        &format!("{}/r/programming/comments/abc/a_post/", server.url()),
+    );
+
+    let bundle_dirs = find_bundle_dirs(&storage);
+    assert_eq!(bundle_dirs.len(), 1);
+    assert!(!bundle_dirs[0].join("fetched.html").exists());
+
+    let conn = rusqlite::Connection::open(home.join(".agentmark/index.db")).unwrap();
+    let title: String = conn
+        .query_row("SELECT title FROM bookmarks LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(title, "Post | Feed");
+}
+
+/// When neither the snapshot nor a trusted fetch has a title, the tab title
+/// the extension sent names the bookmark, not the app shell's site name.
+#[test]
+fn listed_site_uses_tab_title_over_app_shell_when_snapshot_has_no_title() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home_with_snapshot_site(&tmp, &storage, "127.0.0.1/r/");
+
+    let mut server = mockito::Server::new();
+    let _shell = server
+        .mock("GET", "/r/x/comments/1/p/")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body("<html><head><title>Reddit</title></head><body></body></html>")
+        .create();
+
+    let stdin = frame(&json!({
+        "type": "save",
+        "url": format!("{}/r/x/comments/1/p/", server.url()),
+        "title": "Tab Title",
+        "page_html": "<html><body><main><p>The logged-in view of the post, with enough readable text to extract.</p><p>A second paragraph for the extractor.</p></main></body></html>"
+    }));
+    let output = agentmark_cmd(&home)
+        .arg("native-host")
+        .write_stdin(stdin)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(decode_responses(&output)[0]["type"], "save_result");
+
+    let conn = rusqlite::Connection::open(home.join(".agentmark/index.db")).unwrap();
+    let title: String = conn
+        .query_row("SELECT title FROM bookmarks LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(title, "Tab Title");
+}
+
 /// Re-saving a snapshot page is "unchanged" only if the whole page is the same,
 /// not merely the region generic extraction happens to pick as the article.
 #[test]
@@ -1425,4 +1562,445 @@ fn lookup_urls_migrates_an_unmigrated_index() {
         responses,
         vec![json!({"type": "lookup_urls_result", "saved": []})]
     );
+}
+
+// ── Setup states ────────────────────────────────────────────────────
+
+const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+
+/// A temp HOME with nothing in it (AgentMark never set up).
+fn bare_home(tmp: &TempDir) -> std::path::PathBuf {
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    home
+}
+
+/// Run the host over `messages` and return the decoded responses. `path`
+/// becomes the host's `PATH` (the folder dialog and agents are found on it).
+fn run_host(
+    home: &Path,
+    path: Option<&Path>,
+    messages: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut cmd = agentmark_cmd(home);
+    cmd.arg("native-host");
+    if let Some(path) = path {
+        cmd.env("PATH", path);
+    }
+    let output = cmd
+        .write_stdin(frame_all(messages))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    decode_responses(&output)
+}
+
+fn setup_required_error() -> serde_json::Value {
+    json!({
+        "type": "error",
+        "message": "not initialized: AgentMark is not set up yet. Finish setup in the extension or the AgentMark app.",
+        "code": "setup_required"
+    })
+}
+
+#[test]
+fn before_setup_status_says_not_initialized_and_requests_need_setup() {
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+
+    let responses = run_host(
+        &home,
+        None,
+        &[
+            json!({"type": "status", "extension_version": "0.3.0"}),
+            json!({"type": "save", "url": "https://example.com"}),
+            json!({"type": "list"}),
+            json!({"type": "list_collections"}),
+            json!({"type": "show", "id": "am_1"}),
+            json!({"type": "update", "id": "am_1", "changes": {}}),
+            json!({"type": "lookup_urls", "urls": ["https://example.com"]}),
+        ],
+    );
+
+    assert_eq!(responses[0]["type"], "status_result");
+    assert_eq!(responses[0]["ok"], true);
+    assert_eq!(responses[0]["initialized"], false);
+    for response in &responses[1..] {
+        assert_eq!(response, &setup_required_error());
+    }
+    // The binary's logger creates ~/.agentmark/logs; setup files must not appear.
+    assert!(!home.join(".agentmark/config.toml").exists());
+    assert!(!home.join(".agentmark/index.db").exists());
+}
+
+#[test]
+fn after_setup_status_says_initialized_and_old_status_still_works() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+
+    // An old extension sends a bare status and ignores the new key.
+    let responses = run_host(&home, None, &[json!({"type": "status"})]);
+    assert_eq!(
+        responses[0],
+        json!({"type": "status_result", "ok": true, "version": env!("CARGO_PKG_VERSION"), "initialized": true})
+    );
+}
+
+#[test]
+fn get_setup_state_before_setup_has_every_key() {
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+
+    let responses = run_host(&home, None, &[json!({"type": "get_setup_state"})]);
+    assert_eq!(responses[0]["type"], "setup_state_result");
+    let state = &responses[0]["state"];
+    assert_eq!(state["initialized"], false);
+    assert!(state["config_problem"].is_null());
+    assert_eq!(state["version"], env!("CARGO_PKG_VERSION"));
+    assert!(state["platform"]["os"].is_string());
+    assert_eq!(
+        state["default_storage_path_display"],
+        "~/Documents/AgentMark"
+    );
+    assert_eq!(
+        state["default_storage_path"],
+        home.join("Documents/AgentMark").display().to_string()
+    );
+    assert_eq!(
+        state["settings"]["storage_path_display"],
+        "~/Documents/AgentMark"
+    );
+    assert!(state["settings"]["system_prompt"].is_null());
+    assert_eq!(state["settings"]["snapshot_sites"], json!([]));
+    let ids: Vec<_> = state["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, ["claude", "codex", "pi"]);
+    assert_eq!(state["builtin_snapshot_sites"][0], "linkedin.com/in/");
+    assert!(state["bookmark_count"].is_null());
+    assert!(!home.join("Documents").exists());
+}
+
+#[test]
+fn save_settings_field_errors_write_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+
+    let responses = run_host(
+        &home,
+        None,
+        &[json!({"type": "save_settings", "settings": {
+            "storage_path": "bookmarks",
+            "default_agent": "gpt",
+            "snapshot_sites": ["ok.com", "exa mple.com"]
+        }})],
+    );
+    assert_eq!(
+        responses[0],
+        json!({"type": "settings_invalid", "errors": [
+            {"field": "storage_path", "index": null, "code": "not_absolute",
+             "message": "Use a full path such as ~/Documents/AgentMark, not \"bookmarks\"."},
+            {"field": "default_agent", "index": null, "code": "invalid_agent",
+             "message": "\"gpt\" is not a supported agent. Choose claude, codex or pi."},
+            {"field": "snapshot_sites", "index": 1, "code": "invalid_site",
+             "message": "\"exa mple.com\" is not a host/path rule."}
+        ]})
+    );
+    assert!(!home.join(".agentmark/config.toml").exists());
+    assert!(!home.join(".agentmark/index.db").exists());
+}
+
+#[test]
+fn save_settings_reports_a_folder_that_is_not_writable() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+    let locked = tmp.path().join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::write(locked.join("probe"), "x").is_ok() {
+        eprintln!("running as root — permissions not enforced, skipping");
+        return;
+    }
+
+    let responses = run_host(
+        &home,
+        None,
+        &[
+            json!({"type": "save_settings", "settings": {"storage_path": locked.display().to_string()}}),
+        ],
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(responses[0]["type"], "settings_invalid");
+    assert_eq!(responses[0]["errors"][0]["code"], "not_writable");
+    assert!(!home.join(".agentmark/config.toml").exists());
+}
+
+#[test]
+fn save_settings_wrong_type_is_a_parse_error() {
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+    let responses = run_host(
+        &home,
+        None,
+        &[json!({"type": "save_settings", "settings": {"enrichment_enabled": "yes"}})],
+    );
+    assert_eq!(responses[0]["type"], "error");
+    assert!(responses[0]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("invalid message fields: "));
+}
+
+#[test]
+fn save_settings_keeps_comments_and_unknown_keys() {
+    let tmp = TempDir::new().unwrap();
+    let storage = tmp.path().join("bookmarks");
+    let home = setup_home(&tmp, &storage);
+    let config_path = home.join(".agentmark/config.toml");
+    let original = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("# written by hand\nfuture_key = \"kept\"\n{original}"),
+    )
+    .unwrap();
+
+    let responses = run_host(
+        &home,
+        None,
+        &[
+            json!({"type": "save_settings", "settings": {"default_agent": "codex", "system_prompt": "Be brief."}}),
+        ],
+    );
+    assert_eq!(responses[0]["type"], "save_settings_result");
+    assert_eq!(responses[0]["state"]["settings"]["default_agent"], "codex");
+    assert_eq!(
+        responses[0]["state"]["settings"]["storage_path"],
+        storage.display().to_string(),
+        "absent keys keep their value"
+    );
+    let text = std::fs::read_to_string(&config_path).unwrap();
+    assert!(text.starts_with("# written by hand\n"), "{text}");
+    assert!(text.contains("future_key = \"kept\""));
+    assert!(text.contains("default_agent = \"codex\""));
+    assert!(text.contains("system_prompt = \"Be brief.\""));
+}
+
+// ── choose_folder (real dialog seam, fake dialog program) ───────────
+
+/// The dialog program this OS uses, or `None` where there is no dialog.
+fn dialog_program() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some("osascript")
+    } else if cfg!(target_os = "linux") {
+        Some("zenity")
+    } else {
+        None
+    }
+}
+
+/// A PATH holding only a fake dialog program running `body`.
+fn fake_dialog_path(tmp: &TempDir, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp.path().join("fake-bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join(dialog_program().unwrap());
+    std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+fn choose_folder(home: &Path, path: &Path, start: Option<&str>) -> serde_json::Value {
+    let mut request = json!({"type": "choose_folder"});
+    if let Some(start) = start {
+        request["start_path"] = json!(start);
+    }
+    let mut cmd = agentmark_cmd(home);
+    cmd.arg("native-host")
+        .env("PATH", path)
+        // zenity is only used when a display is available.
+        .env("DISPLAY", ":0")
+        .env_remove("WAYLAND_DISPLAY");
+    let output = cmd
+        .write_stdin(frame(&request))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    decode_responses(&output).remove(0)
+}
+
+#[test]
+fn choose_folder_chosen_through_the_dialog_program() {
+    if dialog_program().is_none() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+    std::fs::create_dir_all(home.join("Documents")).unwrap();
+    let args_log = tmp.path().join("dialog-args.txt");
+    let path = fake_dialog_path(
+        &tmp,
+        &format!(
+            "printf '%s\\n' \"$@\" > '{}'\necho '{}/Picked/'",
+            args_log.display(),
+            home.display()
+        ),
+    );
+
+    let response = choose_folder(&home, &path, Some("~/Documents"));
+    assert_eq!(
+        response,
+        json!({
+            "type": "choose_folder_result",
+            "outcome": "chosen",
+            "path": home.join("Picked").display().to_string(),
+            "path_display": "~/Picked",
+            "reason": null
+        })
+    );
+    // The expanded start folder reached the dialog.
+    let args = std::fs::read_to_string(&args_log).unwrap();
+    assert!(
+        args.contains(&home.join("Documents").display().to_string()),
+        "{args}"
+    );
+}
+
+#[test]
+fn choose_folder_cancelled_through_the_dialog_program() {
+    if dialog_program().is_none() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+    // osascript reports cancel as error -128; zenity exits 1.
+    let body = if cfg!(target_os = "macos") {
+        "echo 'execution error: User canceled. (-128)' >&2; exit 1"
+    } else {
+        "exit 1"
+    };
+    let path = fake_dialog_path(&tmp, body);
+    let response = choose_folder(&home, &path, None);
+    assert_eq!(
+        response,
+        json!({"type": "choose_folder_result", "outcome": "cancelled", "path": null, "path_display": null, "reason": null})
+    );
+}
+
+#[test]
+fn choose_folder_unavailable_without_a_dialog_program() {
+    // The agent search path also appends these system directories.
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        for program in ["osascript", "zenity", "kdialog"] {
+            if Path::new(dir).join(program).exists() {
+                eprintln!("{dir}/{program} exists — skipping");
+                return;
+            }
+        }
+    }
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+    let empty = tmp.path().join("empty-bin");
+    std::fs::create_dir_all(&empty).unwrap();
+    let response = choose_folder(&home, &empty, None);
+    assert_eq!(response["type"], "choose_folder_result");
+    assert_eq!(response["outcome"], "unavailable");
+    assert!(response["path"].is_null());
+    assert_eq!(
+        response["reason"],
+        "No folder dialog is available on this system."
+    );
+}
+
+// ── End to end ──────────────────────────────────────────────────────
+
+/// Drives the real binary the way Chrome does (origin as the only argument)
+/// from a bare HOME: status → get_setup_state → save_settings → save →
+/// lookup_urls, then checks the liveness file.
+#[test]
+fn first_run_end_to_end_over_the_native_protocol() {
+    let tmp = TempDir::new().unwrap();
+    let home = bare_home(&tmp);
+    let storage = tmp.path().join("My Bookmarks");
+
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("GET", "/article")
+        .with_status(200)
+        .with_header("content-type", "text/html")
+        .with_body(sample_html())
+        .create();
+    let url = format!("{}/article", server.url());
+
+    let messages = [
+        json!({"type": "status", "extension_version": "0.3.0"}),
+        json!({"type": "get_setup_state"}),
+        json!({"type": "save_settings", "settings": {
+            "storage_path": storage.display().to_string(),
+            "default_agent": "claude",
+            "enrichment_enabled": false
+        }}),
+        json!({"type": "status", "extension_version": "0.3.0"}),
+        json!({"type": "save", "url": url, "title": "Test Title"}),
+        json!({"type": "lookup_urls", "urls": [url, "https://example.com/unsaved"]}),
+    ];
+    let output = Command::cargo_bin("agentmark")
+        .unwrap()
+        .arg(format!("chrome-extension://{EXTENSION_ID}/"))
+        .env("HOME", &home)
+        .write_stdin(frame_all(&messages))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let responses = decode_responses(&output);
+    assert_eq!(responses.len(), messages.len());
+
+    assert_eq!(responses[0]["type"], "status_result");
+    assert_eq!(responses[0]["initialized"], false);
+
+    assert_eq!(responses[1]["type"], "setup_state_result");
+    assert_eq!(responses[1]["state"]["initialized"], false);
+
+    assert_eq!(
+        responses[2]["type"], "save_settings_result",
+        "{}",
+        responses[2]
+    );
+    let state = &responses[2]["state"];
+    assert_eq!(state["initialized"], true);
+    assert_eq!(
+        state["settings"]["storage_path"],
+        storage.display().to_string()
+    );
+    assert_eq!(state["bookmark_count"], 0);
+
+    assert_eq!(responses[3]["initialized"], true);
+
+    assert_eq!(responses[4]["type"], "save_result", "{}", responses[4]);
+    assert_eq!(responses[4]["status"], "created");
+    assert_eq!(find_bundle_dirs(&storage).len(), 1);
+
+    assert_eq!(
+        responses[5],
+        json!({"type": "lookup_urls_result", "saved": [url]})
+    );
+
+    let liveness: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join(".agentmark/extension-connection.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(liveness["extension_id"], EXTENSION_ID);
+    assert_eq!(liveness["extension_version"], "0.3.0");
+    assert_eq!(liveness["host_version"], env!("CARGO_PKG_VERSION"));
+    assert!(liveness["connected_at"].as_str().unwrap().ends_with('Z'));
 }

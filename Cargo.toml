@@ -1,3 +1,6 @@
 [workspace]
-members = ["packages/cli"]
+members = ["packages/cli", "packages/app/src-tauri"]
+# Root cargo build/clippy/test cover only the CLI, so Linux CI never needs
+# the app's WebKit dependencies; the app builds with `-p agentmark-app`.
+default-members = ["packages/cli"]
 resolver = "2"

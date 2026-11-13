@@ -6,7 +6,7 @@
  * the states read the same in both themes. Blue only ever means saved.
  */
 
-export type MarkLook = "idle" | "saving" | "saved-fresh" | "saved" | "error" | "brand";
+export type MarkLook = "idle" | "idle-solid" | "saving" | "saved-fresh" | "saved" | "error" | "brand";
 
 const TILE =
   "M4.284 1.5H19.716A2.784 2.784 0 0 1 22.5 4.284V19.716A2.784 2.784 0 0 1 19.716 22.5H4.284A2.784 2.784 0 0 1 1.5 19.716V4.284A2.784 2.784 0 0 1 4.284 1.5Z";
@@ -24,6 +24,7 @@ export const MARK_COLORS = {
 
 const LABELS: Record<MarkLook, string> = {
   idle: "Not saved",
+  "idle-solid": "Not saved",
   saving: "Saving",
   "saved-fresh": "Saved",
   saved: "Saved",
@@ -66,7 +67,7 @@ export function AgentMarkMark({
           <path d={PLUS} stroke={MARK_COLORS.brand} strokeWidth="1.3" strokeLinecap="round" fill="none" />
         </>
       )}
-      {look === "idle" && (
+      {look === "idle-solid" && (
         <>
           <path d={TILE} fill={MARK_COLORS.idle} />
           <path d={BOOKMARK} fill="#fff" />
@@ -80,7 +81,7 @@ export function AgentMarkMark({
           />
         </>
       )}
-      {look === "saving" && (
+      {(look === "saving" || look === "idle") && (
         <>
           <rect
             x="2.3"
@@ -89,10 +90,10 @@ export function AgentMarkMark({
             height="19.4"
             rx="1.984"
             fill="none"
-            stroke={MARK_COLORS.saving}
+            stroke={(look === "saving" ? MARK_COLORS.saving : MARK_COLORS.idle)}
             strokeWidth="1.6"
           />
-          <path d={BOOKMARK} fill={MARK_COLORS.saving} />
+          <path d={BOOKMARK} fill={(look === "saving" ? MARK_COLORS.saving : MARK_COLORS.idle)} />
         </>
       )}
       {look === "saved-fresh" && (

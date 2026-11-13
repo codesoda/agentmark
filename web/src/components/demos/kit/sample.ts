@@ -13,7 +13,7 @@ export const SAMPLE = {
   site: "Field Notes",
   savedDate: "2026-11-12",
   savedAt: "2026-11-12 05:14:09 UTC",
-  bundleDir: "~/bookmarks/2026/11/12/plain-text-outlives-every-app-am_01JCDX4Q8N3T7V2K9R6M5H1BZE",
+  bundleDir: "~/Documents/AgentMark/2026/11/12/plain-text-outlives-every-app-am_01JCDX4Q8N3T7V2K9R6M5H1BZE",
   bundleDirShort: "2026/11/12/plain-text-outlives-every-app-am_01JC…",
   summary:
     "Argues that notes kept as plain files outlast the apps that edit them. Compares three migrations between note apps and shows that only the markdown export survived each one intact. Ends with a short checklist for picking formats that stay readable in ten years.",

@@ -8,10 +8,15 @@ import {
   querySelectedText,
   queryPageHtml,
   takePendingSave,
+  type ActiveTab,
 } from "../shared/runtime";
-import { classifyConnectionError, type ConnectionProblem } from "../shared/connection";
+import { appStateFromResult, classifyConnectionError, type ConnectionProblem } from "../shared/connection";
 import InstallPrompt from "../shared/InstallPrompt";
-import type { SaveResultResponse } from "../shared/types";
+import SetupForm from "../shared/SetupForm";
+import UpdateRequired from "../shared/UpdateRequired";
+import { useAppState } from "../shared/useAppState";
+import { loadSetupDraft, updateSetupDraft } from "../shared/setup-draft";
+import type { PendingSave, SaveResultResponse, SetupState } from "../shared/types";
 import SaveForm, { type SaveFormValues } from "./SaveForm";
 
 type QuickSaveState =
@@ -44,25 +49,50 @@ type PopupMode =
 
 const AUTO_CLOSE_MS = 2000;
 
-/** Problems the popup shows as setup steps instead of a failed save. */
-function isSetupProblem(
-  problem: ConnectionProblem | null,
-): problem is "not_installed" | "forbidden" | "worker_unreachable" {
-  return problem !== null && problem !== "host_crashed";
+/** App states the popup shows as a setup screen instead of the save. */
+type GateProblem = "not_installed" | "forbidden" | "worker_unreachable";
+
+function isGateProblem(state: string): state is GateProblem {
+  return state === "not_installed" || state === "forbidden" || state === "worker_unreachable";
 }
 
+/**
+ * Where the page to save comes from; resolved once, when the popup opens.
+ * `fromTab` false: an in-page item (a post), handed over by its button.
+ */
+type TargetLookup =
+  | { status: "pending" }
+  | { status: "ready"; target: SaveTarget; fromTab: boolean }
+  | { status: "failed"; message: string };
+
 export default function Popup() {
+  const app = useAppState();
+  const appState = app.status.state;
+  const { report, set: setAppStatus } = app;
   const [quickSaveState, setQuickSaveState] = useState<QuickSaveState>({
     status: "saving",
   });
   const [popupMode, setPopupMode] = useState<PopupMode>({ mode: "quick-save" });
+  const [targetLookup, setTargetLookup] = useState<TargetLookup>({ status: "pending" });
 
-  const dispatched = useRef(false);
+  const resolving = useRef(false);
+  /** Set once a save has been sent; cleared when the app turns out not to be ready. */
+  const saveStarted = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveTarget = useRef<SaveTarget | null>(null);
   const tabId = useRef<number | undefined>(undefined);
+  /** Whether the target is the active tab's page, which is snapshotted at save time. */
+  const snapshotTab = useRef<number | undefined>(undefined);
   // Captured once so the quick-save and the form re-save see identical content.
   const pageHtml = useRef<string | undefined>(undefined);
+  /** The in-page item this popup saves, kept in the setup draft while setup interrupts it. */
+  const pendingItem = useRef<PendingSave | null>(null);
+  /** The item came from the setup draft (an earlier popup of this setup), not a click just now. */
+  const itemFromDraft = useRef(false);
+  /** The active tab, in case a drafted item turns out not to apply. */
+  const activeTab = useRef<ActiveTab | null>(null);
+  /** This popup showed setup: the app was not set up when it opened. */
+  const setupShown = useRef(false);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimer.current) {
@@ -78,41 +108,95 @@ export default function Popup() {
     }, AUTO_CLOSE_MS);
   }, [clearCloseTimer]);
 
-  // Saves the target, resolving it on the first run. A retry reuses it: an
-  // in-page save can only be taken once, so re-resolving would save the tab.
-  const runQuickSave = useCallback(async () => {
-    let target = saveTarget.current;
-    let snapshotTab: number | undefined;
-    if (!target) {
+  // Resolve what to save as soon as the popup opens, while the app is probed.
+  // An in-page save can be taken only once (and expires after a few seconds),
+  // so it is taken now even if setup comes first.
+  useEffect(() => {
+    if (resolving.current) return;
+    resolving.current = true;
+    void (async () => {
       // An in-page button (e.g. on a LinkedIn post) may have prepared this save:
       // then the popup saves that item rather than the page in the active tab.
-      const pending = await takePendingSave();
-      if (pending) {
-        target = { url: pending.url, title: pending.title };
-        pageHtml.current = pending.page_html;
-      } else {
-        let tab;
+      // If setup interrupted such a save in an earlier popup (the folder dialog
+      // closes it), the item waits in the setup draft.
+      const fresh = await takePendingSave();
+      const drafted = fresh ? null : ((await loadSetupDraft())?.pending_save ?? null);
+      const pending = fresh ?? drafted;
+      let tab: ActiveTab | null = null;
+      let tabError: string | null = null;
+      if (!fresh) {
         try {
           tab = await queryActiveTab();
         } catch (err) {
-          setQuickSaveState({
-            status: "error",
-            message: err instanceof Error ? err.message : String(err),
-            problem: null,
-          });
-          return;
+          tabError = err instanceof Error ? err.message : String(err);
         }
-        target = tab;
-        tabId.current = tab.id;
-        snapshotTab = tab.id;
       }
-      saveTarget.current = target;
-    }
+      activeTab.current = tab;
+      if (pending) {
+        pendingItem.current = pending;
+        itemFromDraft.current = drafted !== null;
+        targetItem(pending);
+        return;
+      }
+      if (tab) {
+        targetTab(tab);
+      } else {
+        setTargetLookup({ status: "failed", message: tabError ?? "No active tab found" });
+      }
+    })();
+  }, []);
 
+  function targetItem(item: PendingSave) {
+    saveTarget.current = { url: item.url, title: item.title };
+    pageHtml.current = item.page_html;
+    snapshotTab.current = undefined;
+    tabId.current = undefined;
+    setTargetLookup({ status: "ready", target: saveTarget.current, fromTab: false });
+    setQuickSaveState({ status: "saving", title: item.title });
+  }
+
+  function targetTab(tab: ActiveTab) {
+    saveTarget.current = tab;
+    tabId.current = tab.id;
+    snapshotTab.current = tab.id;
+    pageHtml.current = undefined;
+    setTargetLookup({ status: "ready", target: tab, fromTab: true });
+    setQuickSaveState({ status: "saving", title: tab.title, favIconUrl: tab.favIconUrl });
+  }
+
+  // Setup interrupts an in-page save: keep the item in the setup draft, so a
+  // popup reopened after the folder dialog still saves it.
+  useEffect(() => {
+    if (appState !== "setup_required") return;
+    setupShown.current = true;
+    if (pendingItem.current && !itemFromDraft.current) void updateSetupDraft({ pending_save: pendingItem.current });
+  }, [appState, targetLookup]);
+
+  // A drafted item belongs to a setup that is no longer in progress (the app
+  // was set up elsewhere): forget it and save the active tab as usual.
+  useEffect(() => {
+    if (appState !== "ready" || !itemFromDraft.current || setupShown.current) return;
+    itemFromDraft.current = false;
+    pendingItem.current = null;
+    void updateSetupDraft({ pending_save: null });
+    if (activeTab.current) {
+      targetTab(activeTab.current);
+    } else {
+      setTargetLookup({ status: "failed", message: "No active tab found" });
+    }
+  }, [appState, targetLookup]);
+
+  // Saves the resolved target. A retry reuses it and its snapshot.
+  const runQuickSave = useCallback(async () => {
+    const target = saveTarget.current;
+    if (!target) return;
+    saveStarted.current = true;
     setQuickSaveState({ status: "saving", title: target.title, favIconUrl: target.favIconUrl });
 
-    if (snapshotTab !== undefined) {
-      pageHtml.current = await queryPageHtml(snapshotTab, target.url);
+    if (snapshotTab.current !== undefined) {
+      const tab = snapshotTab.current;
+      snapshotTab.current = undefined;
+      pageHtml.current = await queryPageHtml(tab, target.url);
     }
 
     const response = await sendSaveMessage(target.url, target.title, {
@@ -120,6 +204,13 @@ export default function Popup() {
     });
 
     if (!response.success) {
+      // Not set up, or the app went away: show that screen, and save again once it is fixed.
+      const next = appStateFromResult(response);
+      if (next && next !== "host_crashed") {
+        saveStarted.current = false;
+        report(response);
+        return;
+      }
       setQuickSaveState({
         status: "error",
         message: response.error,
@@ -136,14 +227,22 @@ export default function Popup() {
       bookmarkId: data.id,
       saveStatus: data.status,
     });
-  }, []);
+  }, [report]);
 
-  // Quick-save on mount
+  // Save once the app is ready and the target is known: at once on a normal
+  // open, or after setup or an install finishes.
   useEffect(() => {
-    if (dispatched.current) return;
-    dispatched.current = true;
+    if (appState !== "ready" || targetLookup.status !== "ready" || saveStarted.current) return;
+    if (itemFromDraft.current && !setupShown.current) return; // Swapped for the tab first, above.
     void runQuickSave();
-  }, [runQuickSave]);
+  }, [appState, targetLookup, runQuickSave]);
+
+  const handleSetupDone = useCallback(
+    (state: SetupState) => {
+      setAppStatus({ state: "ready", version: state.version });
+    },
+    [setAppStatus],
+  );
 
   useEffect(() => clearCloseTimer, [clearCloseTimer]);
 
@@ -246,6 +345,61 @@ export default function Popup() {
     );
   }
 
+  if (isGateProblem(appState)) {
+    return (
+      <div className="w-80 p-4">
+        <InstallPrompt problem={appState} onRetry={app.checkAgain} detail={app.status.detail} />
+      </div>
+    );
+  }
+
+  if (appState === "update_required") {
+    return (
+      <div className="w-80 p-4">
+        <UpdateRequired onCheckAgain={app.checkAgain} version={app.status.version} />
+      </div>
+    );
+  }
+
+  if (appState === "setup_required") {
+    return (
+      <div className="w-80 p-4">
+        <SetupForm
+          submitLabel={
+            targetLookup.status === "failed"
+              ? "Finish setup"
+              : targetLookup.status === "ready" && !targetLookup.fromTab
+                ? "Finish and save this post"
+                : "Finish and save this page"
+          }
+          useDraft
+          onDone={handleSetupDone}
+          onResult={app.report}
+        />
+      </div>
+    );
+  }
+
+  if (appState === "host_crashed" && !saveStarted.current) {
+    return (
+      <div className="w-80 p-4" data-testid="error-state">
+        <InstallPrompt problem="host_crashed" onRetry={app.checkAgain} detail={app.status.detail} />
+      </div>
+    );
+  }
+
+  if (targetLookup.status === "failed" && appState !== "checking") {
+    return (
+      <div className="w-80 p-4">
+        <div data-testid="error-state">
+          <h1 className="text-lg font-semibold text-red-700">Save Failed</h1>
+          <p className="mt-1 text-sm text-gray-600">{targetLookup.message}</p>
+          {appState === "ready" && <p className="mt-2 text-xs text-gray-400">AgentMark saves web pages (http and https).</p>}
+        </div>
+      </div>
+    );
+  }
+
   // Quick-save mode
   return (
     <div className="w-80 p-4">
@@ -296,15 +450,7 @@ export default function Popup() {
         </div>
       )}
 
-      {quickSaveState.status === "error" && isSetupProblem(quickSaveState.problem) && (
-        <InstallPrompt
-          problem={quickSaveState.problem}
-          onRetry={() => void runQuickSave()}
-          detail={quickSaveState.message}
-        />
-      )}
-
-      {quickSaveState.status === "error" && !isSetupProblem(quickSaveState.problem) && (
+      {quickSaveState.status === "error" && (
         <div data-testid="error-state">
           <h1 className="text-lg font-semibold text-red-700">Save Failed</h1>
           <p className="mt-1 text-sm text-gray-600">{quickSaveState.message}</p>

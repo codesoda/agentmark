@@ -66,6 +66,46 @@ export class NativeMessagingClient {
   }
 
   /**
+   * Send one request in its own short-lived host process
+   * (`chrome.runtime.sendNativeMessage`), never on the shared port. For
+   * requests that can take minutes, such as the folder dialog: on the port
+   * they would block every other request and break FIFO matching on timeout.
+   */
+  sendOneShot(request: NativeRequest, timeoutMs: number): Promise<NativeResponse> {
+    return new Promise<NativeResponse>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        settled = true;
+        reject(new Error("Native host request timed out"));
+      }, timeoutMs);
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      try {
+        chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, request, (raw: unknown) => {
+          const lastError = chrome.runtime.lastError;
+          if (lastError) {
+            finish(() => reject(new Error(lastError.message ?? "Native host request failed")));
+            return;
+          }
+          finish(() => {
+            try {
+              resolve(parseNativeResponse(raw));
+            } catch (err) {
+              reject(err instanceof Error ? err : new Error(String(err)));
+            }
+          });
+        });
+      } catch (err) {
+        finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+      }
+    });
+  }
+
+  /**
    * Disconnect from the native host and clean up all state.
    */
   disconnect(): void {
